@@ -60,6 +60,7 @@ made narrower (7/8, then 3/4 of the width).
 | `DEMO_FPS` | `10` | most frames kept per second and the first GIF frame rate tried |
 | `DEMO_WIDTH` | `960` | GIF width in pixels |
 | `DEMO_MAX_BYTES` | `6291456` | size limit of the GIF (6 MiB) |
+| `DEMO_PACE` | `2.2` | stretches pauses, cursor moves and caption reading time; `1` is the fastest |
 | `DEMO_SCENES` | all | scenes to record, comma separated: `status`, `general`, `sinks`, `topology` |
 | `DEMO_VERSION` | `git describe --tags --always` | version shown in the page footer |
 | `DEMO_KEEP_WORK` | `0` | `1` keeps the temporary directory (frames, logs) |

@@ -67,6 +67,11 @@ function need(a, k) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// PACE stretches the pauses and cursor moves of the scenes so a viewer can follow them. 1 is the fastest that still works.
+const PACE = Math.max(1, Number(process.env.DEMO_PACE || 2.2));
+const hold = (ms) => sleep(ms * PACE);
+// READ_MS is how long a new caption stays before the scene goes on, before PACE.
+const READ_MS = 1100;
 const log = (msg) => process.stderr.write("[record] " + msg + "\n");
 
 class CDP {
@@ -350,6 +355,7 @@ async function cursor(x, y) {
 // moveTo moves the cursor to pt in about ms milliseconds. The steps follow the clock, so a slow page makes fewer
 // steps and not a longer move.
 async function moveTo(pt, ms = 380, onStep) {
+  ms *= Math.sqrt(PACE);
   const from = { ...mouse };
   const start = performance.now();
   for (let done = false; !done;) {
@@ -416,6 +422,7 @@ async function caption(key) {
   const r = await evaluate(`window.__demo.caption(${JSON.stringify(text)})`);
   if (r.lines > 2) log(`caption ${key} takes ${r.lines} lines`);
   if (r.bg !== "rgba(10, 12, 18, 0.84)") log(`caption ${key} has background ${r.bg}; the page did not take its style`);
+  await hold(READ_MS);
 }
 
 async function openTab(name) {
@@ -495,9 +502,10 @@ async function sceneStatus() {
   await moveTo(await show("v"), 450);
   await pick("v", 'document.getElementById("os-region")', "the Region value");
   await moveTo(await show("v"), 450);
+  await waitFor("the sink status rows", 'document.querySelectorAll("#status-sinks tbody tr").length >= 3 && [...document.querySelectorAll("#status-sinks tbody tr")].pop().offsetHeight > 0', 10000);
   await pick("v", '[...document.querySelectorAll("#status-sinks tbody tr")].pop()', "the sink table");
   await moveTo(await show("v"), 500);
-  await sleep(1600);
+  await hold(1600);
 }
 
 // General: change the write interval and save. The page says the settings are in effect.
@@ -522,7 +530,7 @@ async function sceneGeneral() {
   await waitFor("the saved notice", 'document.querySelector("#settings-result.result-ok:not([hidden])") !== null', 5000);
   await pick("v", 'document.getElementById("settings-result")', "the saved notice");
   await show("v");
-  await sleep(1700);
+  await hold(1700);
 }
 
 async function closeDialog() {
@@ -540,17 +548,17 @@ async function sceneSinks() {
   await waitFor("the sink dialog", "window.__demo.hasDialog()", 3000);
   await caption("sinks_add");
   await evaluate("window.__demo.raise()");
-  await sleep(700);
+  await hold(700);
   await pick("ver", 'document.getElementById("s-influx_version")', "the InfluxDB version select");
   for (const v of ["v2", "v3"]) {
     await clickOn("ver", false);
     await evaluate(`window.__demo.choose("ver", ${JSON.stringify(v)})`);
-    await sleep(1000);
+    await hold(1000);
   }
   await pick("type", 'document.getElementById("s-type")', "the sink type select");
   await clickOn("type", false);
   await evaluate('window.__demo.choose("type", "otlp")');
-  await sleep(1300);
+  await hold(1300);
   await closeDialog();
 
   await pick("edit", 'window.__demo.rowButton("sinks-table", "site-b", "^(edit|수정)$")', "the Edit button of site-b");
@@ -568,9 +576,9 @@ async function sceneSinks() {
   for (const sel of [":first-child", ":nth-child(2)", ":last-child"]) {
     await pick("rule", `document.querySelector("#s-rules-list .rule-row${sel} .rule-key")`, "a tag rule key");
     await moveTo(await show("rule"), 320);
-    await sleep(250);
+    await hold(250);
   }
-  await sleep(1300);
+  await hold(1300);
   await closeDialog();
 }
 
@@ -583,11 +591,11 @@ async function dragItem(item, target, drop, innerFirst) {
   const src = await evaluate(`window.__demo.box(${JSON.stringify(item)})`);
   await moveTo(src.y === from.y ? from : src, 380);
   await evaluate("window.__demo.press(true)");
-  await sleep(120);
+  await hold(120);
   await evaluate(`window.__demo.dragStart(${JSON.stringify(item)})`);
   await moveTo(to, 750, async (x, y) => { await evaluate(`window.__demo.dragOver(${x}, ${y})`); });
   const ok = await evaluate(`window.__demo.dragOver(${to.x}, ${to.y})`);
-  await sleep(drop ? 300 : 1800);
+  await hold(drop ? 300 : 1800);
   await evaluate(`window.__demo.dragEnd(${to.x}, ${to.y}, ${drop})`);
   await evaluate("window.__demo.press(false)");
   return ok;
@@ -606,19 +614,19 @@ async function sceneTopology() {
   const ok = await dragItem("vm", "room", true, true);
   const after = await evaluate(count);
   if (!ok || after !== before + 1) throw new Error(`the drop did not add a VM (accepted ${ok}, VMs ${before} -> ${after})`);
-  await sleep(700);
+  await hold(700);
 
   if (await evaluate("window.__demo.home()")) await waitFor("the scroll to the top", "window.__demo.scrolled()", 3000);
   await pick("chip", 'document.querySelector(".tp-vm.tp-sel[data-drag=vm]")', "the new VM on the canvas");
   await pick("full", 'window.__demo.gpuFor("chip", false)', "a GPU that refuses the VM");
   if (await dragItem("chip", "full", false)) throw new Error("the full GPU took the VM");
-  await sleep(400);
+  await hold(400);
 
   await caption("topo_save");
   await pick("save", 'document.querySelector(".tp-toolbar .btn-primary")', "the topology Save button");
   await clickOn("save");
   await waitFor("the saved toast", 'document.querySelector("#toast.toast-ok:not([hidden])") !== null', 8000);
-  await sleep(2000);
+  await hold(2000);
 }
 
 const SCENE_FUNCS = { status: sceneStatus, general: sceneGeneral, sinks: sceneSinks, topology: sceneTopology };
