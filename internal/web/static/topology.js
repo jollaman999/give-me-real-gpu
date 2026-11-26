@@ -1804,7 +1804,8 @@
     S.els.hint.hidden = true;
     rootEl.appendChild(S.els.toolbar);
     rootEl.appendChild(body);
-    rootEl.appendChild(S.els.hint);
+    // Outside the glass panel: its backdrop-filter would make it the containing block of this fixed element.
+    document.body.appendChild(S.els.hint);
     bindDrag(rootEl);
     var g = gm();
     if (g && g.onLangChange) g.onLangChange(function () {
