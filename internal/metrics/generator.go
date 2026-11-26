@@ -13,14 +13,16 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jollaman999/give-me-real-gpu/internal/tagrules"
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
 )
 
 // Options configures a Generator.
 type Options struct {
-	CredentialID string  // credential id issued by the management platform (credential_id tag, uuid prefix)
-	Seed         int64   // random seed for value jitter
-	XIDRate      float64 // probability of an XID event per GPU VM per collection
+	CredentialID string          // credential id issued by the management platform (credential_id tag, uuid prefix)
+	Seed         int64           // random seed for value jitter
+	XIDRate      float64         // probability of an XID event per GPU VM per collection
+	TagRules     []tagrules.Rule // applied in order to the tags of every line. Measurements and fields stay as they are
 }
 
 // Generator produces the metrics of one credential (one OpenStack cloud).
@@ -144,7 +146,7 @@ func (g *Generator) Collect(now time.Time) []string {
 		}
 	}
 
-	b := &batch{}
+	b := &batch{rules: g.opt.TagRules}
 	for _, hs := range g.hosts {
 		g.emitHost(b, hs, now, dt, due60)
 	}

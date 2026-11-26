@@ -278,6 +278,27 @@ input::placeholder { color: var(--muted); opacity: 0.8; }
 .result-ok { background: var(--ok-bg); color: var(--ok); }
 .result-error { background: var(--error-bg); color: var(--error); }
 
+/* tag and label rules */
+.rules { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.5rem 0.75rem; }
+.rules summary { font-weight: 600; cursor: pointer; }
+.rules summary .muted { font-weight: 400; }
+.rules-body { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.6rem; }
+.rules-body p.notice { margin: 0; padding: 0.5rem 0.75rem; font-size: 12px; }
+.rules-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.rules-list:empty { display: none; }
+.rule-row {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 0.4rem;
+  align-items: center;
+}
+.rule-buttons { display: inline-flex; gap: 0.25rem; }
+.rule-problem { grid-column: 1 / -1; margin: 0; }
+.rules-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+.rules-count { margin-left: 0.4rem; font-weight: 500; }
+.rules .btn:disabled { opacity: 0.45; cursor: default; }
+.rules .btn:disabled:hover { background: var(--surface); }
+
 /* dialog */
 .dialog {
   width: min(560px, calc(100vw - 2rem));
@@ -313,6 +334,8 @@ input::placeholder { color: var(--muted); opacity: 0.8; }
   main { padding: 0.75rem; }
   .card { padding: 0.85rem; }
   .field-row { grid-template-columns: 1fr; }
+  .rule-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .rule-empty { display: none; }
   .kv th { width: auto; }
   .grid thead { display: none; }
   .grid, .grid tbody, .grid tr, .grid td { display: block; width: 100%; }

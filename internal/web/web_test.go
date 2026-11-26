@@ -310,7 +310,36 @@ console.log(JSON.stringify({
   keptSameURL: h.secretKept(orig, "password_set", " http://192.0.2.10:8086 "),
   clearedNewURL: h.secretKept(orig, "password_set", "http://192.0.2.11:8086"),
   notSet: h.secretKept(orig, "token_set", "http://192.0.2.10:8086"),
-  newSink: h.secretKept(null, "password_set", "")
+  newSink: h.secretKept(null, "password_set", ""),
+  rules: h.tagRules([
+    {action: "rename", key: " host ", new_key: " hostname ", value: "left over"},
+    {action: "drop", key: "time_diff", new_key: "x", value: "y"},
+    {action: "add", key: "env", new_key: "x", value: " dev "},
+    {action: "rename", key: "", new_key: "  ", value: "ignored"},
+    {action: "drop", key: " "},
+    {action: "add", key: "", new_key: "ignored", value: ""},
+    {action: "rename", key: "", new_key: "only_new"},
+    null
+  ]),
+  noRules: h.tagRules(undefined),
+  problems: [
+    {action: "rename", key: "host", new_key: "hostname"},
+    {action: "rename", key: "host", new_key: ""},
+    {action: "rename", key: "host", new_key: " host "},
+    {action: "rename", key: "", new_key: "hostname"},
+    {action: "drop", key: "host"},
+    {action: "drop", key: ""},
+    {action: "add", key: "env", value: ""},
+    {action: "add", key: "", value: "dev"},
+    {action: "add", key: "env", value: "dev"}
+  ].map(h.tagRuleProblem),
+  influxRules: h.sinkPayload({name: "site-a", type: "influxdb", url: "http://192.0.2.10:8086", db: "telegraf",
+    credential_id: "cid", enabled: true, tag_rules: [{action: "drop", key: "uuid", value: "x"}, {action: "add", key: "", value: ""}]}),
+  toggled: h.sinkPayload(Object.assign(h.sinkValues({id: 3, name: "site-b", type: "otlp",
+    url: "http://192.0.2.20:8429/opentelemetry/v1/metrics", influx_version: "", org: "", db: "", username: "",
+    credential_id: "", enabled: true, password_set: true, token_set: true,
+    tag_rules: [{action: "rename", key: "entity_id", new_key: "id"}, {action: "add", key: "env", value: "dev"}]}),
+    {enabled: false}))
 }));`
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
@@ -331,24 +360,26 @@ console.log(JSON.stringify({
 		"format":       "1 and x and {c}",
 		"influx": map[string]any{
 			"name": "site-a", "type": "influxdb", "url": "http://192.0.2.10:8086", "influx_version": "v1", "org": "",
-			"db": "telegraf", "username": "u", "credential_id": "cid", "enabled": true,
+			"db": "telegraf", "username": "u", "credential_id": "cid", "enabled": true, "tag_rules": []any{},
 		},
 		"otlp": map[string]any{
 			"name": "site-b", "type": "otlp", "url": "http://192.0.2.20:8429/opentelemetry/v1/metrics", "influx_version": "",
 			"org": "", "db": "", "username": "", "credential_id": "", "enabled": false,
-			"password": "<change-me>", "token": "<change-me>",
+			"password": "<change-me>", "token": "<change-me>", "tag_rules": []any{},
 		},
 		"influxV2": map[string]any{
 			"name": "site-a", "type": "influxdb", "url": "http://192.0.2.20:8086", "influx_version": "v2", "org": "org-a",
 			"db": "bucket-a", "username": "", "credential_id": "cid", "enabled": true, "token": "<change-me>",
+			"tag_rules": []any{},
 		},
 		"influxV3": map[string]any{
 			"name": "site-a", "type": "influxdb", "url": "http://192.0.2.20:8181", "influx_version": "v3", "org": "",
-			"db": "metrics", "username": "", "credential_id": "cid", "enabled": true,
+			"db": "metrics", "username": "", "credential_id": "cid", "enabled": true, "tag_rules": []any{},
 		},
 		"influxBadVersion": map[string]any{
 			"name": "site-a", "type": "influxdb", "url": "http://192.0.2.20:8086", "influx_version": "v1", "org": "",
 			"db": "telegraf", "username": "u", "credential_id": "cid", "enabled": true, "password": "<change-me>",
+			"tag_rules": []any{},
 		},
 		"versions":      []any{"v1", "v2", "v3", "v1", "v1", "v1"},
 		"variants":      []any{"influxdb-v1", "influxdb-v2", "influxdb-v3", "otlp"},
@@ -356,6 +387,30 @@ console.log(JSON.stringify({
 		"clearedNewURL": false,
 		"notSet":        false,
 		"newSink":       false,
+		"rules": []any{
+			map[string]any{"action": "rename", "key": "host", "new_key": "hostname"},
+			map[string]any{"action": "drop", "key": "time_diff"},
+			map[string]any{"action": "add", "key": "env", "value": "dev"},
+			map[string]any{"action": "rename", "key": "", "new_key": "only_new"},
+		},
+		"noRules": []any{},
+		"problems": []any{
+			"", "sinks.rule_new_key_missing", "sinks.rule_same_key", "sinks.rule_key_missing",
+			"", "", "sinks.rule_value_missing", "sinks.rule_key_missing", "",
+		},
+		"influxRules": map[string]any{
+			"name": "site-a", "type": "influxdb", "url": "http://192.0.2.10:8086", "influx_version": "v1", "org": "",
+			"db": "telegraf", "username": "", "credential_id": "cid", "enabled": true,
+			"tag_rules": []any{map[string]any{"action": "drop", "key": "uuid"}},
+		},
+		"toggled": map[string]any{
+			"name": "site-b", "type": "otlp", "url": "http://192.0.2.20:8429/opentelemetry/v1/metrics", "influx_version": "",
+			"org": "", "db": "", "username": "", "credential_id": "", "enabled": false,
+			"tag_rules": []any{
+				map[string]any{"action": "rename", "key": "entity_id", "new_key": "id"},
+				map[string]any{"action": "add", "key": "env", "value": "dev"},
+			},
+		},
 	}
 	for k, w := range want {
 		if !reflect.DeepEqual(got[k], w) {

@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"github.com/jollaman999/give-me-real-gpu/internal/tagrules"
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
 )
 
@@ -75,6 +76,7 @@ type Sink struct {
 	Token         string   // otlp and influxdb v2/v3. Stored as plain text, never sent out by the API
 	CredentialID  string   // influxdb only, a UUID when enabled
 	Enabled       bool
+	TagRules      []tagrules.Rule // applied in order to the tags (influxdb) or attributes (otlp). nil for none
 }
 
 // Snapshot is everything the emulator needs to run, read at one point in time.
@@ -120,6 +122,7 @@ type sinkRow struct {
 	Token         string
 	CredentialID  string
 	Enabled       bool
+	TagRules      string // JSON list of tagrules.Rule. Empty for none (also in rows written before it was added)
 }
 
 func (sinkRow) TableName() string { return "sinks" }
@@ -258,7 +261,11 @@ func (s *Store) Snapshot() (Snapshot, error) {
 		}
 		snap.Sinks = make([]Sink, len(rows))
 		for i, r := range rows {
-			snap.Sinks[i] = r.sink()
+			sk, err := r.sink()
+			if err != nil {
+				return err
+			}
+			snap.Sinks[i] = sk
 		}
 
 		var tr topologyRow
@@ -308,6 +315,7 @@ func (s *Store) SaveSettings(in Settings) error {
 func (s *Store) CreateSink(in Sink) (Sink, error) {
 	in.ID = 0
 	in = defaultInfluxVersion(in)
+	in.TagRules = tagrules.Clean(in.TagRules)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out Sink
@@ -319,12 +327,15 @@ func (s *Store) CreateSink(in Sink) (Sink, error) {
 		if p := ValidateSink(in, others); len(p) > 0 {
 			return &ValidationError{Problems: p}
 		}
-		row := toSinkRow(in)
+		row, err := toSinkRow(in)
+		if err != nil {
+			return err
+		}
 		if err := tx.Create(&row).Error; err != nil {
 			return err
 		}
-		out = row.sink()
-		return nil
+		out, err = row.sink()
+		return err
 	})
 	if err != nil {
 		return Sink{}, err
@@ -341,6 +352,7 @@ func (s *Store) CreateSink(in Sink) (Sink, error) {
 // the same way (and the stored Username with the Password), so no unused secret stays behind.
 func (s *Store) UpdateSink(in Sink) (Sink, error) {
 	in = defaultInfluxVersion(in)
+	in.TagRules = tagrules.Clean(in.TagRules)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out Sink
@@ -352,7 +364,10 @@ func (s *Store) UpdateSink(in Sink) (Sink, error) {
 			}
 			return err
 		}
-		old := cur.sink()
+		old, err := cur.sink()
+		if err != nil {
+			return err
+		}
 		sameMode := in.Type == old.Type && in.InfluxVersion == old.InfluxVersion
 		if in.URL == cur.URL {
 			if in.Password == "" && (sameMode || usesPassword(in)) {
@@ -372,12 +387,15 @@ func (s *Store) UpdateSink(in Sink) (Sink, error) {
 		if p := ValidateSink(in, others); len(p) > 0 {
 			return &ValidationError{Problems: p}
 		}
-		row := toSinkRow(in)
+		row, err := toSinkRow(in)
+		if err != nil {
+			return err
+		}
 		if err := tx.Save(&row).Error; err != nil {
 			return err
 		}
-		out = row.sink()
-		return nil
+		out, err = row.sink()
+		return err
 	})
 	if err != nil {
 		return Sink{}, err
@@ -507,6 +525,9 @@ func ValidateSink(sk Sink, others []string) []string {
 			add("%s: influx_version %q must be %q, %q or %q", label, sk.InfluxVersion, InfluxV1, InfluxV2, InfluxV3)
 		}
 	}
+	for _, rp := range tagrules.Validate(sk.TagRules) {
+		add("%s: %s", label, rp)
+	}
 	if !sk.Enabled {
 		return p
 	}
@@ -596,7 +617,15 @@ func (r settingsRow) settings() Settings {
 	}
 }
 
-func toSinkRow(sk Sink) sinkRow {
+func toSinkRow(sk Sink) (sinkRow, error) {
+	var rules string
+	if len(sk.TagRules) > 0 {
+		b, err := json.Marshal(sk.TagRules)
+		if err != nil {
+			return sinkRow{}, fmt.Errorf("encode tag rules: %w", err)
+		}
+		rules = string(b)
+	}
 	return sinkRow{
 		ID:            sk.ID,
 		Name:          sk.Name,
@@ -610,10 +639,17 @@ func toSinkRow(sk Sink) sinkRow {
 		Token:         sk.Token,
 		CredentialID:  sk.CredentialID,
 		Enabled:       sk.Enabled,
-	}
+		TagRules:      rules,
+	}, nil
 }
 
-func (r sinkRow) sink() Sink {
+func (r sinkRow) sink() (Sink, error) {
+	var rules []tagrules.Rule
+	if r.TagRules != "" {
+		if err := json.Unmarshal([]byte(r.TagRules), &rules); err != nil {
+			return Sink{}, fmt.Errorf("decode stored tag rules of sink %q: %w", r.Name, err)
+		}
+	}
 	return defaultInfluxVersion(Sink{
 		ID:            r.ID,
 		Name:          r.Name,
@@ -627,5 +663,6 @@ func (r sinkRow) sink() Sink {
 		Token:         r.Token,
 		CredentialID:  r.CredentialID,
 		Enabled:       r.Enabled,
-	})
+		TagRules:      tagrules.Clean(rules),
+	}), nil
 }

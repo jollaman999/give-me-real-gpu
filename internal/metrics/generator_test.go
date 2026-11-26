@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jollaman999/give-me-real-gpu/internal/tagrules"
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
 )
 
@@ -799,5 +800,53 @@ func TestNormBDF(t *testing.T) {
 		if got := normBDF(in); got != want {
 			t.Errorf("normBDF(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestTagRules(t *testing.T) {
+	run := func(rules []tagrules.Rule) []string {
+		g := NewGenerator(fixture(), Options{CredentialID: testCred, Seed: 7, XIDRate: 0.3, TagRules: rules})
+		var out []string
+		for i := 0; i < 3; i++ {
+			out = append(out, g.Collect(t0.Add(time.Duration(i)*30*time.Second))...)
+		}
+		return out
+	}
+	plain := run(nil)
+	if empty := run([]tagrules.Rule{}); !reflect.DeepEqual(empty, plain) {
+		t.Fatal("an empty rule list changed the output")
+	}
+	rules := []tagrules.Rule{
+		{Action: tagrules.Rename, Key: "host", NewKey: "hostname"},
+		{Action: tagrules.Drop, Key: "time_diff"},
+		{Action: tagrules.Add, Key: "env", Value: "dev env"},
+	}
+	ruled := run(rules)
+	if len(ruled) != len(plain) {
+		t.Fatalf("%d lines with rules, %d without", len(ruled), len(plain))
+	}
+	a, b := parseAll(t, plain), parseAll(t, ruled)
+	renamed := 0
+	for i := range a {
+		want := map[string]string{}
+		for k, v := range a[i].tags {
+			want[k] = v
+		}
+		if h, ok := want["host"]; ok {
+			delete(want, "host")
+			want["hostname"] = h
+			renamed++
+		}
+		delete(want, "time_diff")
+		want["env"] = "dev env"
+		if b[i].name != a[i].name || b[i].ts != a[i].ts || !reflect.DeepEqual(b[i].fields, a[i].fields) {
+			t.Errorf("line %d: measurement, fields or time changed:\n%s\n%s", i, plain[i], ruled[i])
+		}
+		if !reflect.DeepEqual(b[i].tags, want) {
+			t.Errorf("line %d: tags %v, want %v", i, b[i].tags, want)
+		}
+	}
+	if renamed == 0 {
+		t.Error("no line had a host tag to rename")
 	}
 }

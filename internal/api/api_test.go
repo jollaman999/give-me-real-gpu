@@ -14,6 +14,7 @@ import (
 	"github.com/labstack/echo/v5"
 
 	"github.com/jollaman999/give-me-real-gpu/internal/store"
+	"github.com/jollaman999/give-me-real-gpu/internal/tagrules"
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
 )
 
@@ -276,6 +277,68 @@ func TestSinksInfluxVersions(t *testing.T) {
 	snap, _ := st.Snapshot()
 	if snap.Sinks[0].InfluxVersion != "v3" || snap.Sinks[0].Token != sinkToken || snap.Sinks[1].InfluxVersion != "v3" {
 		t.Errorf("stored %+v", snap.Sinks)
+	}
+}
+
+func TestSinksTagRules(t *testing.T) {
+	e, st := newServer(t, nil)
+
+	code, body := do(t, e, http.MethodPost, "/api/v1/sinks", `{"name":"site-b","type":"otlp","url":"http://192.0.2.20:4318/v1/metrics"}`)
+	if code != http.StatusCreated || !strings.Contains(body, `"tag_rules":[]`) {
+		t.Fatalf("POST without rules %d %s, want tag_rules []", code, body)
+	}
+
+	rules := `[{"action":"rename","key":"host","new_key":"hostname"},{"action":"drop","key":"time_diff"},{"action":"add","key":"env","value":"dev"}]`
+	code, body = do(t, e, http.MethodPost, "/api/v1/sinks", `{"name":"site-a","type":"influxdb","url":"http://192.0.2.10:8086",
+		"db":"telegraf","credential_id":"`+credID+`","enabled":true,"tag_rules":`+rules+`}`)
+	if code != http.StatusCreated {
+		t.Fatalf("POST with rules %d %s", code, body)
+	}
+	var a struct {
+		ID       int             `json:"id"`
+		TagRules json.RawMessage `json:"tag_rules"`
+	}
+	decodeJSON(t, body, &a)
+	if string(a.TagRules) != rules {
+		t.Errorf("created rules %s, want %s", a.TagRules, rules)
+	}
+	path := "/api/v1/sinks/" + strconv.Itoa(a.ID)
+
+	code, body = do(t, e, http.MethodPut, path, `{"db":"other"}`)
+	decodeJSON(t, body, &a)
+	if code != http.StatusOK || string(a.TagRules) != rules {
+		t.Errorf("PUT without tag_rules %d, rules %s, want them kept", code, a.TagRules)
+	}
+	code, body = do(t, e, http.MethodPut, path, `{"tag_rules":null}`)
+	decodeJSON(t, body, &a)
+	if code != http.StatusOK || string(a.TagRules) != rules {
+		t.Errorf("PUT with null tag_rules %d, rules %s, want them kept", code, a.TagRules)
+	}
+
+	// A shorter list replaces the stored one without leaving fields of the old rules behind.
+	code, body = do(t, e, http.MethodPut, path, `{"tag_rules":[{"action":"drop","key":"uuid"}]}`)
+	decodeJSON(t, body, &a)
+	if want := `[{"action":"drop","key":"uuid"}]`; code != http.StatusOK || string(a.TagRules) != want {
+		t.Errorf("PUT one rule %d, rules %s, want %s", code, a.TagRules, want)
+	}
+	snap, _ := st.Snapshot()
+	if got := snap.Sinks[1].TagRules; len(got) != 1 || got[0] != (tagrules.Rule{Action: tagrules.Drop, Key: "uuid"}) {
+		t.Errorf("stored rules %+v", got)
+	}
+
+	code, body = do(t, e, http.MethodPut, path, `{"tag_rules":[{"action":"add","key":"env"},{"action":"move","key":"a"}]}`)
+	wantError(t, code, body, http.StatusBadRequest, "validation failed", `sink "site-a": tag_rules[0]: value is empty`)
+	wantError(t, code, body, http.StatusBadRequest, "validation failed", `tag_rules[1]: action "move" must be`)
+	code, body = do(t, e, http.MethodPut, path, `{"tag_rules":[{"action":"drop","key":"a","colour":"red"}]}`)
+	wantError(t, code, body, http.StatusBadRequest, "invalid request body", "colour")
+
+	code, body = do(t, e, http.MethodPut, path, `{"tag_rules":[]}`)
+	decodeJSON(t, body, &a)
+	if code != http.StatusOK || string(a.TagRules) != "[]" {
+		t.Errorf("PUT empty list %d, rules %s, want []", code, a.TagRules)
+	}
+	if snap, _ := st.Snapshot(); snap.Sinks[1].TagRules != nil {
+		t.Errorf("stored rules after clearing %+v", snap.Sinks[1].TagRules)
 	}
 }
 

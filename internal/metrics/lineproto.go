@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/jollaman999/give-me-real-gpu/internal/tagrules"
 )
 
 var (
@@ -16,11 +18,13 @@ var (
 // batch collects line protocol lines in the order they are added.
 type batch struct {
 	lines []string
+	rules []tagrules.Rule // applied to the tags of every point
 }
 
-// add appends one point. Empty tag values are dropped (InfluxDB rejects them),
-// and a point without any field is skipped.
+// add appends one point. The tag rules run on a copy of tags, empty tag values are dropped
+// (InfluxDB rejects them), and a point without any field is skipped.
 func (b *batch) add(name string, tags map[string]string, fields map[string]any, ts int64) {
+	tags = tagrules.ApplyTags(b.rules, tags)
 	if line := formatLine(name, tags, fields, ts); line != "" {
 		b.lines = append(b.lines, line)
 	}

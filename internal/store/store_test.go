@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"github.com/jollaman999/give-me-real-gpu/internal/tagrules"
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
 )
 
@@ -139,7 +140,7 @@ func TestReopenKeepsData(t *testing.T) {
 	if snap.Settings != st {
 		t.Errorf("settings after reopen %+v, want %+v", snap.Settings, st)
 	}
-	if len(snap.Sinks) != 1 || snap.Sinks[0] != created {
+	if len(snap.Sinks) != 1 || !reflect.DeepEqual(snap.Sinks[0], created) {
 		t.Errorf("sinks after reopen %+v, want [%+v]", snap.Sinks, created)
 	}
 	if len(snap.Topology.Hypervisors) != 1 || snap.Topology.Hypervisors[0].Hostname != top.Hypervisors[0].Hostname {
@@ -654,7 +655,7 @@ func TestInfluxVersionStored(t *testing.T) {
 	}
 }
 
-// oldSinkRow is the sinks table before influx_version and org were added.
+// oldSinkRow is the sinks table before influx_version, org and tag_rules were added.
 type oldSinkRow struct {
 	ID           uint   `gorm:"primaryKey"`
 	Name         string `gorm:"not null;uniqueIndex"`
@@ -704,14 +705,88 @@ func TestOpenOldSchemaReadsV1(t *testing.T) {
 	}
 	want := Sink{ID: row.ID, Name: "site-a", Type: SinkInfluxDB, URL: "http://192.0.2.10:8086", InfluxVersion: InfluxV1,
 		DB: "telegraf", Username: "writer", Password: "<change-me>", CredentialID: credID, Enabled: true}
-	if snap.Sinks[0] != want {
+	if !reflect.DeepEqual(snap.Sinks[0], want) {
 		t.Errorf("old influxdb row read as %+v, want %+v", snap.Sinks[0], want)
 	}
 	if snap.Sinks[1].InfluxVersion != "" || snap.Sinks[1].Org != "" {
 		t.Errorf("old otlp row read as %+v", snap.Sinks[1])
 	}
 	got, err := s.UpdateSink(snap.Sinks[0])
-	if err != nil || got != want {
+	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("saving the old row again: %v %+v", err, got)
+	}
+}
+
+func TestSinkTagRules(t *testing.T) {
+	s, dir := openTemp(t)
+	in := influxSink("site-a")
+	in.TagRules = []tagrules.Rule{
+		{Action: tagrules.Rename, Key: "host", NewKey: "hostname", Value: "left-over"},
+		{Action: tagrules.Drop, Key: "time_diff"},
+		{Action: tagrules.Add, Key: "env", Value: "dev"},
+	}
+	want := []tagrules.Rule{
+		{Action: tagrules.Rename, Key: "host", NewKey: "hostname"},
+		{Action: tagrules.Drop, Key: "time_diff"},
+		{Action: tagrules.Add, Key: "env", Value: "dev"},
+	}
+	a, err := s.CreateSink(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(a.TagRules, want) {
+		t.Errorf("created with rules %+v, want %+v", a.TagRules, want)
+	}
+	var raw string
+	if err := s.db.Raw("SELECT tag_rules FROM sinks WHERE id = ?", a.ID).Scan(&raw).Error; err != nil {
+		t.Fatal(err)
+	}
+	if wantRaw := `[{"action":"rename","key":"host","new_key":"hostname"},{"action":"drop","key":"time_diff"},{"action":"add","key":"env","value":"dev"}]`; raw != wantRaw {
+		t.Errorf("tag_rules column %s, want %s", raw, wantRaw)
+	}
+	s.Close()
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	snap, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(snap.Sinks[0].TagRules, want) {
+		t.Errorf("rules after reopen %+v, want %+v", snap.Sinks[0].TagRules, want)
+	}
+
+	a.TagRules = []tagrules.Rule{{Action: tagrules.Drop, Key: "uuid"}}
+	got, err := s.UpdateSink(a)
+	if err != nil || !reflect.DeepEqual(got.TagRules, a.TagRules) {
+		t.Errorf("update to one rule: %v %+v", err, got.TagRules)
+	}
+	a.TagRules = []tagrules.Rule{}
+	if got, err = s.UpdateSink(a); err != nil || got.TagRules != nil {
+		t.Errorf("update to no rules: %v %+v", err, got.TagRules)
+	}
+	if err := s.db.Raw("SELECT tag_rules FROM sinks WHERE id = ?", a.ID).Scan(&raw).Error; err != nil || raw != "" {
+		t.Errorf("tag_rules column without rules %q %v, want empty", raw, err)
+	}
+
+	bad := influxSink("site-b")
+	bad.Enabled = false
+	bad.TagRules = []tagrules.Rule{{Action: "replace", Key: "host"}, {Action: tagrules.Add, Key: "env"}}
+	p := problemsOf(t, func() error { _, err := s.CreateSink(bad); return err }())
+	wantP := []string{
+		`sink "site-b": tag_rules[0]: action "replace" must be "rename", "drop" or "add"`,
+		`sink "site-b": tag_rules[1]: value is empty (InfluxDB does not accept an empty tag value)`,
+	}
+	if !reflect.DeepEqual(p, wantP) {
+		t.Errorf("problems of a disabled sink with bad rules %q, want %q", p, wantP)
+	}
+
+	if err := s.db.Exec("UPDATE sinks SET tag_rules = ? WHERE id = ?", "{not json", a.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Snapshot(); err == nil || !strings.Contains(err.Error(), `tag rules of sink "site-a"`) {
+		t.Errorf("snapshot with broken stored rules: %v", err)
 	}
 }

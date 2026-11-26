@@ -46,6 +46,49 @@
     return type === "influxdb" ? "influxdb-" + influxVersion(version) : String(type || "");
   }
 
+  var RULE_ACTIONS = ["rename", "drop", "add"];
+  var MAX_TAG_RULES = 50;
+
+  function ruleText(v) {
+    return String(v === undefined || v === null ? "" : v).trim();
+  }
+
+  // tagRuleBlank tells whether a rule row has nothing typed in the fields its action uses.
+  function tagRuleBlank(r) {
+    if (!r || ruleText(r.key) !== "") return false;
+    if (r.action === "rename") return ruleText(r.new_key) === "";
+    if (r.action === "add") return ruleText(r.value) === "";
+    return true;
+  }
+
+  // tagRules turns rule rows into the tag_rules list of the sink body. Blank rows are left out
+  // and each rule only carries the fields its action uses.
+  function tagRules(rows) {
+    var out = [];
+    (rows || []).forEach(function (r) {
+      if (!r || tagRuleBlank(r)) return;
+      var action = ruleText(r.action);
+      var rule = { action: action, key: ruleText(r.key) };
+      if (action === "rename") rule.new_key = ruleText(r.new_key);
+      if (action === "add") rule.value = ruleText(r.value);
+      out.push(rule);
+    });
+    return out;
+  }
+
+  // tagRuleProblem returns the i18n key of what is wrong with a rule row, or "" when it looks fine.
+  // The server makes the final check.
+  function tagRuleProblem(r) {
+    if (tagRuleBlank(r)) return "";
+    if (ruleText(r.key) === "") return "sinks.rule_key_missing";
+    if (r.action === "rename") {
+      if (ruleText(r.new_key) === "") return "sinks.rule_new_key_missing";
+      if (ruleText(r.new_key) === ruleText(r.key)) return "sinks.rule_same_key";
+    }
+    if (r.action === "add" && ruleText(r.value) === "") return "sinks.rule_value_missing";
+    return "";
+  }
+
   // sinkPayload turns form values into the body of POST/PUT /api/v1/sinks.
   // Fields the chosen type and version do not use are sent empty. Secrets are only sent when typed.
   function sinkPayload(v) {
@@ -62,11 +105,23 @@
       db: influx ? String(v.db || "").trim() : "",
       username: basic ? String(v.username || "").trim() : "",
       credential_id: influx ? String(v.credential_id || "").trim() : "",
-      enabled: !!v.enabled
+      enabled: !!v.enabled,
+      tag_rules: tagRules(v.tag_rules)
     };
     if (basic && v.password) body.password = v.password;
     if (bearer && v.token) body.token = v.token;
     return body;
+  }
+
+  // sinkValues turns a sink from GET /api/v1/sinks into form values. Secrets start empty.
+  function sinkValues(s) {
+    return {
+      name: s.name, type: s.type, url: s.url, influx_version: influxVersion(s.influx_version), org: s.org,
+      db: s.db, username: s.username, credential_id: s.credential_id, enabled: s.enabled, password: "", token: "",
+      tag_rules: (s.tag_rules || []).map(function (r) {
+        return { action: r.action, key: r.key || "", new_key: r.new_key || "", value: r.value || "" };
+      })
+    };
   }
 
   // secretKept tells whether a saved secret survives the save: the sink exists,
@@ -82,7 +137,10 @@
     format: format,
     influxVersion: influxVersion,
     sinkVariant: sinkVariant,
+    tagRules: tagRules,
+    tagRuleProblem: tagRuleProblem,
     sinkPayload: sinkPayload,
+    sinkValues: sinkValues,
     secretKept: secretKept
   };
   if (typeof module !== "undefined" && module.exports) module.exports = helpers;
@@ -434,13 +492,6 @@
     });
   }
 
-  function sinkValues(s) {
-    return {
-      name: s.name, type: s.type, url: s.url, influx_version: influxVersion(s.influx_version), org: s.org,
-      db: s.db, username: s.username, credential_id: s.credential_id, enabled: s.enabled, password: "", token: ""
-    };
-  }
-
   function toggleSink(s, on, input) {
     var box = $("sinks-result");
     hideResult(box);
@@ -486,9 +537,14 @@
       var toggle = el("input", { attrs: { type: "checkbox", "aria-label": t("sinks.toggle_label", { name: s.name }) } });
       toggle.checked = !!s.enabled;
       toggle.addEventListener("change", function () { toggleSink(s, toggle.checked, toggle); });
+      var nRules = (s.tag_rules || []).length;
+      var rulesBadge = nRules ? el("span", {
+        className: "badge rules-count",
+        text: t(nRules === 1 ? "sinks.rules_count_one" : "sinks.rules_count", { n: nRules })
+      }) : null;
       tbody.appendChild(el("tr", {}, [
         el("td", { attrs: { "data-label": t("sinks.col_name") } }, [el("strong", { text: s.name })]),
-        el("td", { attrs: { "data-label": t("sinks.col_type") }, text: typeLabel(s.type, s.influx_version || "") }),
+        el("td", { attrs: { "data-label": t("sinks.col_type") } }, [typeLabel(s.type, s.influx_version || ""), rulesBadge]),
         el("td", { className: "wrap", attrs: { "data-label": t("sinks.col_url") } }, [el("code", { text: s.url || "-" })]),
         el("td", { attrs: { "data-label": t("sinks.col_enabled") } }, [el("label", { className: "switch" }, [toggle, el("span", { className: "slider", attrs: { "aria-hidden": "true" } })])]),
         el("td", { className: "row-actions" }, [
@@ -500,11 +556,12 @@
   }
 
   function openSinkDialog(s) {
-    state.editing = { original: s || null };
     var v = s ? sinkValues(s) : {
       name: "", type: "influxdb", url: "", influx_version: "v1", org: "", db: "", username: "",
-      credential_id: "", enabled: true, password: "", token: ""
+      credential_id: "", enabled: true, password: "", token: "", tag_rules: []
     };
+    state.editing = { original: s || null, rules: v.tag_rules };
+    $("s-rules").open = v.tag_rules.length > 0;
     $("s-name").value = v.name || "";
     $("s-type").value = v.type === "otlp" ? "otlp" : "influxdb";
     $("s-url").value = v.url || "";
@@ -567,6 +624,108 @@
     $("s-token").placeholder = secretKept(orig, "token_set", url) ? t("common.unchanged") : "";
     var hadSecret = !!(orig && (orig.password_set || orig.token_set));
     $("s-url-warning").hidden = !(hadSecret && url.trim() !== orig.url);
+    renderRules(type);
+  }
+
+  // ---- tag and label rules ----
+
+  var RULE_ACTION_LABELS = { rename: "sinks.rule_rename", drop: "sinks.rule_drop", add: "sinks.rule_add" };
+
+  function renderRules(type) {
+    var rules = state.editing.rules;
+    var otlp = type === "otlp";
+    var n = tagRules(rules).length;
+    $("s-rules-title").textContent = t(otlp ? "sinks.label_rules" : "sinks.tag_rules");
+    $("s-rules-count").textContent = n ? "(" + n + ")" : "";
+    $("s-rules-hint").textContent = t(otlp ? "sinks.rules_hint_otlp" : "sinks.rules_hint_influxdb");
+    $("s-rule-add").disabled = rules.length >= MAX_TAG_RULES;
+    $("s-rules-max").hidden = rules.length < MAX_TAG_RULES;
+    var list = $("s-rules-list");
+    list.textContent = "";
+    rules.forEach(function (r, i) { list.appendChild(ruleRow(r, i, rules.length)); });
+  }
+
+  function moveRule(i, delta) {
+    var rules = state.editing.rules;
+    var j = i + delta;
+    if (j < 0 || j >= rules.length) return;
+    var r = rules[i];
+    rules[i] = rules[j];
+    rules[j] = r;
+    renderRules($("s-type").value);
+    var row = $("s-rules-list").children[j];
+    var btn = row && row.querySelector(delta < 0 ? ".rule-up" : ".rule-down");
+    if (btn && !btn.disabled) btn.focus();
+  }
+
+  function ruleInput(r, field, label, placeholder, problemBox) {
+    var input = el("input", { attrs: {
+      type: "text", autocomplete: "off", spellcheck: "false", "aria-label": t(label), placeholder: placeholder
+    } });
+    input.className = "rule-" + field.replace("_", "-");
+    input.value = r[field] || "";
+    input.addEventListener("input", function () {
+      r[field] = input.value;
+      showRuleProblem(r, problemBox);
+      var n = tagRules(state.editing.rules).length;
+      $("s-rules-count").textContent = n ? "(" + n + ")" : "";
+    });
+    return input;
+  }
+
+  function showRuleProblem(r, box) {
+    var key = tagRuleProblem(r);
+    box.textContent = key ? t(key) : "";
+    box.hidden = !key;
+  }
+
+  function ruleRow(r, i, count) {
+    var problem = el("p", { className: "hint error-text rule-problem" });
+    var action = el("select", { className: "rule-action", attrs: { "aria-label": t("sinks.rule_action") } },
+      RULE_ACTIONS.map(function (a) { return el("option", { text: t(RULE_ACTION_LABELS[a]), attrs: { value: a } }); }));
+    action.value = r.action;
+    action.addEventListener("change", function () {
+      r.action = action.value;
+      renderRules($("s-type").value);
+      var row = $("s-rules-list").children[i];
+      if (row) row.querySelector(".rule-action").focus();
+    });
+    var second;
+    if (r.action === "rename") second = ruleInput(r, "new_key", "sinks.rule_new_key", "hostname", problem);
+    else if (r.action === "add") second = ruleInput(r, "value", "sinks.rule_value", "dev", problem);
+    else second = el("span", { className: "rule-empty", attrs: { "aria-hidden": "true" } });
+    var keyHolder = r.action === "add" ? "env" : "host";
+    var row = el("div", { className: "rule-row" }, [
+      action,
+      ruleInput(r, "key", "sinks.rule_key", keyHolder, problem),
+      second,
+      el("span", { className: "rule-buttons" }, [
+        el("button", { className: "btn btn-small rule-up", text: "\u2191", title: t("sinks.rule_up"),
+          attrs: { type: "button", "aria-label": t("sinks.rule_up") }, on: { click: function () { moveRule(i, -1); } } }),
+        el("button", { className: "btn btn-small rule-down", text: "\u2193", title: t("sinks.rule_down"),
+          attrs: { type: "button", "aria-label": t("sinks.rule_down") }, on: { click: function () { moveRule(i, 1); } } }),
+        el("button", { className: "btn btn-small btn-danger rule-remove", text: t("sinks.rule_remove"),
+          attrs: { type: "button" }, on: { click: function () {
+            state.editing.rules.splice(i, 1);
+            renderRules($("s-type").value);
+            $("s-rule-add").focus();
+          } } })
+      ]),
+      problem
+    ]);
+    row.querySelector(".rule-up").disabled = i === 0;
+    row.querySelector(".rule-down").disabled = i === count - 1;
+    showRuleProblem(r, problem);
+    return row;
+  }
+
+  function addRule() {
+    if (!state.editing || state.editing.rules.length >= MAX_TAG_RULES) return;
+    state.editing.rules.push({ action: "rename", key: "", new_key: "", value: "" });
+    $("s-rules").open = true;
+    renderRules($("s-type").value);
+    var rows = $("s-rules-list").children;
+    rows[rows.length - 1].querySelector(".rule-key").focus();
   }
 
   function saveSink(ev) {
@@ -584,7 +743,8 @@
       password: $("s-password").value,
       token: $("s-token").value,
       credential_id: $("s-credential_id").value,
-      enabled: $("s-enabled").checked
+      enabled: $("s-enabled").checked,
+      tag_rules: state.editing ? state.editing.rules : []
     });
     var req = orig
       ? api("PUT", "/api/v1/sinks/" + encodeURIComponent(orig.id), body)
@@ -637,6 +797,7 @@
     $("s-type").addEventListener("change", renderSinkDialog);
     $("s-influx_version").addEventListener("change", renderSinkDialog);
     $("s-url").addEventListener("input", renderSinkDialog);
+    $("s-rule-add").addEventListener("click", addRule);
     document.addEventListener("visibilitychange", function () {
       if (!document.hidden) refreshStatus();
     });

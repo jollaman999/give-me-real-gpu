@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jollaman999/give-me-real-gpu/internal/otlp"
+	"github.com/jollaman999/give-me-real-gpu/internal/tagrules"
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
 )
 
@@ -529,5 +530,64 @@ func TestGPUViews(t *testing.T) {
 	}
 	if len(hopper) == 0 {
 		t.Fatal("default topology has no Hopper GPU; the GPM checks prove nothing")
+	}
+}
+
+// TestTagRules: the rules change the attribute keys of every point and resource, and nothing else.
+func TestTagRules(t *testing.T) {
+	rules := []tagrules.Rule{
+		{Action: tagrules.Rename, Key: LabelEntityID, NewKey: "node_id"},
+		{Action: tagrules.Drop, Key: "state"},
+		{Action: tagrules.Drop, Key: "process.owner"},
+		{Action: tagrules.Add, Key: "env", Value: "dev"},
+	}
+	plainGen := NewGenerator(topology.Default(), Options{Seed: 3, XIDRate: 0.2})
+	ruledGen := NewGenerator(topology.Default(), Options{Seed: 3, XIDRate: 0.2, TagRules: rules})
+	resources := 0
+	for i := 0; i < 3; i++ {
+		now := t0.Add(time.Duration(i) * 10 * time.Second)
+		plainReq, ruledReq := plainGen.Collect(now), ruledGen.Collect(now)
+		plain, ruled := flatten(t, plainReq), flatten(t, ruledReq)
+		if len(plain) != len(ruled) {
+			t.Fatalf("collection %d: %d points with rules, %d without", i, len(ruled), len(plain))
+		}
+		for j := range plain {
+			a, b := plain[j], ruled[j]
+			want := map[string]string{}
+			for k, v := range a.attrs {
+				want[k] = v
+			}
+			want["node_id"] = want[LabelEntityID]
+			delete(want, LabelEntityID)
+			delete(want, "state")
+			want["env"] = "dev"
+			if b.name != a.name || b.value != a.value || b.time != a.time || b.start != a.start {
+				t.Fatalf("collection %d point %d: %s=%v changed to %s=%v", i, j, a.name, a.value, b.name, b.value)
+			}
+			if fmt.Sprint(b.attrs) != fmt.Sprint(want) {
+				t.Fatalf("collection %d %s: attributes %v, want %v", i, a.name, b.attrs, want)
+			}
+		}
+		for k, rm := range ruledReq.ResourceMetrics {
+			orig := plainReq.ResourceMetrics[k].Resource
+			if len(orig) == 0 {
+				if len(rm.Resource) != 0 {
+					t.Errorf("empty resource got %+v", rm.Resource)
+				}
+				continue
+			}
+			resources++
+			if len(rm.Resource) != len(orig)-1 {
+				t.Errorf("resource %+v, want %+v without process.owner", rm.Resource, orig)
+			}
+			for _, kv := range rm.Resource {
+				if kv.Key == "process.owner" || kv.Key == "env" {
+					t.Errorf("resource has %s: %+v", kv.Key, rm.Resource)
+				}
+			}
+		}
+	}
+	if resources == 0 {
+		t.Error("no resource with attributes was checked")
 	}
 }

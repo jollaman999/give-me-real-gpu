@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/jollaman999/give-me-real-gpu/internal/influx"
+	"github.com/jollaman999/give-me-real-gpu/internal/otlp"
 	"github.com/jollaman999/give-me-real-gpu/internal/store"
+	"github.com/jollaman999/give-me-real-gpu/internal/tagrules"
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
 )
 
@@ -191,6 +193,11 @@ func TestSinkKey(t *testing.T) {
 			c.CredentialID = "1b3e6a52-7f1d-4c2a-9e8b-1a2b3c4d5e6f"
 			return sinkKey(c, topo, s)
 		},
+		"tag rules": func() string {
+			c := sk
+			c.TagRules = []tagrules.Rule{{Action: tagrules.Drop, Key: "time_diff"}}
+			return sinkKey(c, topo, s)
+		},
 		"topology": func() string { return sinkKey(sk, otherTopo, s) },
 		"seed":     func() string { c := s; c.Seed = 9; return sinkKey(sk, topo, c) },
 		"xid rate": func() string { c := s; c.XIDRate = 0.5; return sinkKey(sk, topo, c) },
@@ -269,5 +276,55 @@ func TestNewJobPassesInfluxVersion(t *testing.T) {
 	got := j.(*influxJob).sink
 	if got.Version != influx.V2 || got.Org != "o" || got.DB != "bucket-a" || got.Token != "<change-me>" {
 		t.Errorf("influx sink %+v", got)
+	}
+}
+
+func TestNewJobPassesTagRules(t *testing.T) {
+	rules := []tagrules.Rule{{Action: tagrules.Rename, Key: "host", NewKey: "hostname"}, {Action: tagrules.Add, Key: "env", Value: "dev"}}
+	sk := store.Sink{ID: 1, Name: "site-a", Type: store.SinkInfluxDB, URL: "http://192.0.2.20:8086", DB: "telegraf",
+		CredentialID: credID, Enabled: true, TagRules: rules}
+	j, err := newJob(sk, topology.Default(), store.DefaultSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, n := j.Collect(time.Unix(1800000000, 0))
+	lines := payload.([]string)
+	if n == 0 {
+		t.Fatal("no lines")
+	}
+	for _, l := range lines {
+		if strings.Contains(l, ",host=") || !strings.Contains(l, ",env=dev") {
+			t.Fatalf("influx line without the rules applied: %s", l)
+		}
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), ",hostname=") {
+		t.Error("no line has the renamed hostname tag")
+	}
+
+	sk = store.Sink{ID: 2, Name: "site-b", Type: store.SinkOTLP, URL: "http://192.0.2.20:4318/v1/metrics", Enabled: true,
+		TagRules: []tagrules.Rule{{Action: tagrules.Rename, Key: "entity_id", NewKey: "node_id"}}}
+	j, err = newJob(sk, topology.Default(), store.DefaultSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, n = j.Collect(time.Unix(1800000000, 0))
+	req := payload.(*otlp.ExportRequest)
+	if n == 0 {
+		t.Fatal("no data points")
+	}
+	for _, rm := range req.ResourceMetrics {
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				for _, p := range m.Points {
+					keys := map[string]bool{}
+					for _, kv := range p.Attributes {
+						keys[kv.Key] = true
+					}
+					if keys["entity_id"] || !keys["node_id"] {
+						t.Fatalf("%s point attributes %+v, want node_id instead of entity_id", m.Name, p.Attributes)
+					}
+				}
+			}
+		}
 	}
 }

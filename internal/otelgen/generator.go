@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jollaman999/give-me-real-gpu/internal/otlp"
+	"github.com/jollaman999/give-me-real-gpu/internal/tagrules"
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
 )
 
@@ -25,8 +26,9 @@ const LabelEntityID = "entity_id"
 
 // Options configures a Generator.
 type Options struct {
-	Seed    int64   // random seed for value jitter
-	XIDRate float64 // probability of an XID event per GPU VM per collection
+	Seed     int64           // random seed for value jitter
+	XIDRate  float64         // probability of an XID event per GPU VM per collection
+	TagRules []tagrules.Rule // applied in order to the data point and resource attributes. Metric names stay as they are
 }
 
 // Generator produces the metrics of every node of one topology.
@@ -148,6 +150,7 @@ func (g *Generator) Collect(now time.Time) *otlp.ExportRequest {
 	for _, a := range g.agents {
 		req.ResourceMetrics = append(req.ResourceMetrics, a.collect(now, dt)...)
 	}
+	tagrules.ApplyRequest(g.opt.TagRules, req)
 	return req
 }
 

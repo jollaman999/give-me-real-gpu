@@ -15,6 +15,7 @@ import (
 	"github.com/labstack/echo/v5"
 
 	"github.com/jollaman999/give-me-real-gpu/internal/store"
+	"github.com/jollaman999/give-me-real-gpu/internal/tagrules"
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
 )
 
@@ -83,37 +84,40 @@ type settingsIn struct {
 
 // sinkOut is one sink in GET /api/v1/sinks.
 type sinkOut struct {
-	ID            uint           `json:"id"`
-	Name          string         `json:"name"`
-	Type          store.SinkType `json:"type"`
-	URL           string         `json:"url"`
-	InfluxVersion string         `json:"influx_version"`
-	Org           string         `json:"org"`
-	DB            string         `json:"db"`
-	Username      string         `json:"username"`
-	PasswordSet   bool           `json:"password_set"`
-	TokenSet      bool           `json:"token_set"`
-	CredentialID  string         `json:"credential_id"`
-	Enabled       bool           `json:"enabled"`
+	ID            uint            `json:"id"`
+	Name          string          `json:"name"`
+	Type          store.SinkType  `json:"type"`
+	URL           string          `json:"url"`
+	InfluxVersion string          `json:"influx_version"`
+	Org           string          `json:"org"`
+	DB            string          `json:"db"`
+	Username      string          `json:"username"`
+	PasswordSet   bool            `json:"password_set"`
+	TokenSet      bool            `json:"token_set"`
+	CredentialID  string          `json:"credential_id"`
+	Enabled       bool            `json:"enabled"`
+	TagRules      []tagrules.Rule `json:"tag_rules"` // [] when there are none
 }
 
 // sinkIn is the body of POST /api/v1/sinks and PUT /api/v1/sinks/:id. id, password_set and token_set
-// are accepted so a client can send back what it got, and are ignored.
+// are accepted so a client can send back what it got, and are ignored. tag_rules replaces the whole list;
+// missing or null keeps the stored list on PUT.
 type sinkIn struct {
-	ID            uint           `json:"id"`
-	Name          string         `json:"name"`
-	Type          store.SinkType `json:"type"`
-	URL           string         `json:"url"`
-	InfluxVersion string         `json:"influx_version"`
-	Org           string         `json:"org"`
-	DB            string         `json:"db"`
-	Username      string         `json:"username"`
-	Password      string         `json:"password"`
-	Token         string         `json:"token"`
-	PasswordSet   bool           `json:"password_set"`
-	TokenSet      bool           `json:"token_set"`
-	CredentialID  string         `json:"credential_id"`
-	Enabled       bool           `json:"enabled"`
+	ID            uint             `json:"id"`
+	Name          string           `json:"name"`
+	Type          store.SinkType   `json:"type"`
+	URL           string           `json:"url"`
+	InfluxVersion string           `json:"influx_version"`
+	Org           string           `json:"org"`
+	DB            string           `json:"db"`
+	Username      string           `json:"username"`
+	Password      string           `json:"password"`
+	Token         string           `json:"token"`
+	PasswordSet   bool             `json:"password_set"`
+	TokenSet      bool             `json:"token_set"`
+	CredentialID  string           `json:"credential_id"`
+	Enabled       bool             `json:"enabled"`
+	TagRules      *[]tagrules.Rule `json:"tag_rules"`
 }
 
 type handler struct {
@@ -259,6 +263,9 @@ func (h *handler) updateSink(c *echo.Context) error {
 	if err := decode(c, &in); err != nil {
 		return badBody(c, err)
 	}
+	if in.TagRules == nil {
+		in.TagRules = &cur.TagRules
+	}
 	s, err := h.st.UpdateSink(in.sink(id))
 	if err != nil {
 		return fail(c, err)
@@ -304,6 +311,10 @@ func (h *handler) resetTopology(c *echo.Context) error {
 }
 
 func (in sinkIn) sink(id uint) store.Sink {
+	var rules []tagrules.Rule
+	if in.TagRules != nil {
+		rules = *in.TagRules
+	}
 	return store.Sink{
 		ID:            id,
 		Name:          in.Name,
@@ -317,6 +328,7 @@ func (in sinkIn) sink(id uint) store.Sink {
 		Token:         in.Token,
 		CredentialID:  in.CredentialID,
 		Enabled:       in.Enabled,
+		TagRules:      rules,
 	}
 }
 
@@ -333,6 +345,10 @@ func toSettingsOut(s store.Settings) settingsOut {
 }
 
 func toSinkOut(s store.Sink) sinkOut {
+	rules := s.TagRules
+	if rules == nil {
+		rules = []tagrules.Rule{}
+	}
 	return sinkOut{
 		ID:            s.ID,
 		Name:          s.Name,
@@ -346,6 +362,7 @@ func toSinkOut(s store.Sink) sinkOut {
 		TokenSet:      s.Token != "",
 		CredentialID:  s.CredentialID,
 		Enabled:       s.Enabled,
+		TagRules:      rules,
 	}
 }
 

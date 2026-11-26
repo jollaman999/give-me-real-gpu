@@ -238,6 +238,18 @@
             <span data-i18n="sinks.enabled">Enabled</span>
           </label>
         </div>
+        <details id="s-rules" class="rules">
+          <summary><span id="s-rules-title">Tag rules</span> <span id="s-rules-count" class="muted"></span></summary>
+          <div class="rules-body">
+            <p class="hint" id="s-rules-hint"></p>
+            <p class="notice notice-warn" data-i18n="sinks.rules_warning">Renaming or dropping a key can break the monitoring server's queries that read this data.</p>
+            <div id="s-rules-list" class="rules-list"></div>
+            <div class="rules-foot">
+              <button type="button" class="btn btn-small" id="s-rule-add" data-i18n="sinks.rule_add_row">Add rule</button>
+              <p class="hint" id="s-rules-max" hidden data-i18n="sinks.rules_max">At most 50 rules.</p>
+            </div>
+          </div>
+        </details>
         <div id="sink-form-result" class="result" hidden></div>
         <div class="actions">
           <button type="button" class="btn" id="sink-cancel" data-i18n="common.cancel">Cancel</button>

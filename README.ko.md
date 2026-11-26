@@ -318,6 +318,7 @@ curl -s -X PUT http://localhost:15080/api/v1/settings \
 | `GET /api/v1/status` | 상태 탭에 나오는 내용 |
 | `GET`, `PUT /api/v1/settings` | 일반 설정. `PUT` 에서 뺀 키는 값을 그대로 둡니다 |
 | `GET`, `POST /api/v1/sinks`, `PUT`, `DELETE /api/v1/sinks/<id>` | sink. `PUT` 에서 뺀 키는 값을 그대로 둡니다 |
+| `POST /api/v1/sinks`, `PUT /api/v1/sinks/<id>` 의 `tag_rules` | 그 sink 의 [tag 와 라벨 규칙](#tag-와-라벨-규칙). `PUT` 은 목록 전체를 바꾸고, `[]` 이면 규칙을 모두 지웁니다. 키를 빼거나 `null` 로 보내면 저장된 규칙을 그대로 둡니다 |
 | `GET`, `PUT /api/v1/topology`, `POST /api/v1/topology/reset` | 저장된 토폴로지. `PUT` 은 빈 칸을 채우지 않고 보낸 그대로 저장합니다 |
 | `POST /api/v1/topology/fill` | 본문의 토폴로지에서 빈 칸을 채우고 문제를 나열합니다. 저장하지 않습니다 |
 | `GET /api/v1/topology/catalog` | 편집기가 내놓는 GPU 모델, 프로필, flavor |
@@ -347,6 +348,7 @@ sink 하나가 목적지 하나입니다. 켜진 sink 는 수집할 때마다 �
 | 사용자 이름, 비밀번호 (`username`, `password`) | `influxdb` v1 과 `otlp` sink 의 HTTP Basic 인증. 둘 다 비어 있으면 인증 없이 씁니다. `influxdb` v2·v3 sink 는 쓰지 않습니다 |
 | API 토큰, Bearer 토큰 (`token`) | `influxdb` v2·v3 sink 의 API 토큰, 또는 `otlp` sink 의 Bearer 토큰 |
 | 켜기 (`enabled`) | 켜진 sink 에만 쓰고 그때만 모든 칸을 검사하므로, 꺼진 sink 는 덜 채운 채로 두어도 됩니다 |
+| tag·라벨 규칙 (`tag_rules`) | 선택입니다. tag 키(`influxdb`)나 속성 키(`otlp`)를 바꾸고, 빼고, 더하는 순서 있는 규칙 목록. 비어 있으면 그대로 씁니다. [tag 와 라벨 규칙](#tag-와-라벨-규칙) 참고 |
 
 비밀번호와 토큰은 DB 파일(권한 0600)에 평문으로 저장하고 API 로 내보내지 않습니다.
 수정할 때 칸을 비워 두면 저장된 값을 그대로 씁니다. **URL 을 바꾸면 저장된 비밀번호와 토큰을 지웁니다.**
@@ -464,6 +466,76 @@ curl -s -X POST http://localhost:15080/api/v1/sinks \
 
 [OTLP 지표](#otlp-지표)의 저장 이름은 저장소가 Prometheus 식 이름으로 바꾼다고 보고 적은 것입니다. VictoriaMetrics 는
 `-opentelemetry.usePrometheusNaming` 을 주고 띄웁니다. 다른 저장소는 이름을 다르게 만들 수 있으니 저장된 이름을 저장소에서 확인합니다.
+
+### tag 와 라벨 규칙
+
+sink 마다 규칙(`tag_rules`)으로 그 sink 가 쓰는 tag(`influxdb` sink)나 보내는 속성(`otlp` sink. 화면과 저장소에서는 라벨)의
+키를 바꾸고, 빼고, 더할 수 있습니다. 규칙이 없는 sink 는 [InfluxDB 지표](#influxdb-지표)와 [OTLP 지표](#otlp-지표)에
+적은 그대로 씁니다.
+
+| 동작 (`action`) | 규칙의 키 | 하는 일 |
+|-----------------|-----------|---------|
+| `rename` | `key`, `new_key` | `key` 의 값을 `new_key` 로 옮깁니다. `new_key` 가 이미 있으면 덮어씁니다. `key` 가 없으면 아무것도 하지 않습니다 |
+| `drop` | `key` | `key` 를 뺍니다 |
+| `add` | `key`, `value` | `key` 를 고정 값 `value` 로 둡니다. `key` 가 이미 있으면 덮어씁니다 |
+
+- 규칙은 적힌 순서대로 그 sink 의 모든 줄이나 데이터 포인트에 적용합니다. 뒤의 규칙은 앞 규칙이 바꾼 결과를 봅니다.
+- `influxdb` sink: tag 에만 적용합니다. measurement 이름, field 이름과 값은 그대로입니다.
+- `otlp` sink: `rename`·`drop` 은 데이터 포인트 속성과 resource 속성(프로세스 resource 의 `process.pid` 등)에 적용합니다.
+  `add` 는 모든 데이터 포인트에만 붙이고, resource 에서는 이미 있는 키의 값만 바꿉니다. 지표 이름은 그대로입니다.
+- 규칙은 키를 바꾸고 값은 바꾸지 않습니다. 이미 있는 tag 나 속성의 값을 고쳐 쓰는 규칙은 없습니다.
+
+아래를 어기면 저장이 거부됩니다(다른 [설정 API](#설정-api) 문제와 같이 400).
+
+- `action` 은 `rename`, `drop`, `add` 중 하나이고 `key` 는 비어 있으면 안 됩니다.
+- `rename` 은 `new_key` 가 비어 있지 않고 `key` 와 달라야 합니다.
+- `add` 는 `value` 가 비어 있으면 안 됩니다(InfluxDB 는 빈 tag 값을 거부합니다).
+- 키와 값에 줄바꿈이 들어가면 안 됩니다.
+- sink 하나에 규칙은 최대 50개입니다.
+
+설정 화면에서는 sink 대화 상자에서 `influxdb` sink 는 **Tag 규칙**, `otlp` sink 는 **라벨 규칙** 에서 고칩니다. API 로는 sink 와 함께 보냅니다.
+
+```sh
+curl -s -X POST http://localhost:15080/api/v1/sinks \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "site-a", "type": "influxdb", "url": "http://192.0.2.30:8086", "db": "telegraf",
+       "username": "<influxdb-user>", "password": "<change-me>",
+       "credential_id": "3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07", "enabled": true,
+       "tag_rules": [
+         {"action": "rename", "key": "host", "new_key": "hostname"},
+         {"action": "drop", "key": "time_diff"},
+         {"action": "add", "key": "env", "value": "dev"}
+       ]}'
+```
+
+이 규칙이면 `emu-vgpu-01` 의 `swap` 줄이 아래처럼 바뀝니다. tag 는 여전히 키 순서로 정렬해 쓰고, 값은 바꾸지 않으므로
+`uuid` 값에는 hostname 이 그대로 남습니다.
+
+```text
+# 전
+swap,cloud_service=openstack,collection_type=agent,credential_id=3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07,gpu_type=BARE_METAL,host=emu-vgpu-01,time_diff=0,type=host,uuid=3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07:emu-vgpu-01 free=8581344658i,server_time=1795713527i,total=8589934592i,used=8589934i,used_percent=0.1 1795713527434360688
+# 후
+swap,cloud_service=openstack,collection_type=agent,credential_id=3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07,env=dev,gpu_type=BARE_METAL,hostname=emu-vgpu-01,type=host,uuid=3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07:emu-vgpu-01 free=8581344658i,server_time=1795713527i,total=8589934592i,used=8589934i,used_percent=0.1 1795713527434360688
+```
+
+`otlp` sink 에서 `{"action": "rename", "key": "entity_id", "new_key": "node_id"}` 는 `emu-vgpu-01` 의 모든 데이터
+포인트에서 노드 키를 옮깁니다.
+
+```text
+# 전
+system.uptime  entity_id=1a011d3e-2c7f-52df-b57c-ef644f3bc056
+# 후
+system.uptime  node_id=1a011d3e-2c7f-52df-b57c-ef644f3bc056
+```
+
+**키를 바꾸면 이 데이터를 읽는 모니터링 서버가 못 찾을 수 있습니다.** 모니터링 서버는 InfluxDB 줄을 `credential_id`,
+`uuid`, `host` 같은 tag 로, OTLP 데이터를 `entity_id` 로 찾으므로 이름을 바꾸거나 뺀 키는 그 쿼리와 맞지 않습니다.
+줄을 서로 구분하는 키(`cpu` 줄의 `cpu`, `dcgm` 줄의 `index` 등)를 빼면 저장소에서 그 포인트끼리 겹칩니다.
+다른 이름을 기대하는 쪽에 맞출 때만 규칙을 쓰고, 아니면 비워 둡니다.
+
+검사하지 않는 것이 두 가지 더 있습니다. 규칙으로 같은 measurement 의 field 와 이름이 같은 tag 를 만들면 `v3` sink 에서는 그 tag 가
+빠지고([InfluxDB v3](#influxdb-v3) 참고), v1·v2 는 둘 다 받으므로 InfluxQL 에서 `::tag` 로 구분해야 합니다. 저장소가 쓰는 예약 키
+(`time`, v2 의 `_measurement`·`_field`·`_value`·`_start`·`_stop`)는 거부하지 않지만 쓰기나 조회가 깨집니다.
 
 ## 토폴로지 직접 만들기
 

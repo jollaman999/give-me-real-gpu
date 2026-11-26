@@ -320,6 +320,7 @@ curl -s -X PUT http://localhost:15080/api/v1/settings \
 | `GET /api/v1/status` | What the Status tab shows |
 | `GET`, `PUT /api/v1/settings` | General settings. Keys left out of a `PUT` keep their value |
 | `GET`, `POST /api/v1/sinks`, `PUT`, `DELETE /api/v1/sinks/<id>` | Sinks. Keys left out of a `PUT` keep their value |
+| `tag_rules` in `POST /api/v1/sinks` and `PUT /api/v1/sinks/<id>` | The [tag and label rules](#tag-and-label-rules) of the sink. A `PUT` replaces the whole list; `[]` removes every rule, and leaving the key out (or `null`) keeps the saved rules |
 | `GET`, `PUT /api/v1/topology`, `POST /api/v1/topology/reset` | The saved topology. `PUT` saves it as sent, without filling empty fields |
 | `POST /api/v1/topology/fill` | Fills the empty fields of the topology in the body and lists its problems. Saves nothing |
 | `GET /api/v1/topology/catalog` | GPU models, profiles and flavors the editor offers |
@@ -349,6 +350,7 @@ A sink is one destination. Every enabled sink receives every collection.
 | Username, Password (`username`, `password`) | HTTP Basic authentication for `influxdb` v1 and `otlp` sinks. When both are empty, writes are sent without authentication. `influxdb` v2 and v3 sinks ignore them |
 | API token, Bearer token (`token`) | API token of an `influxdb` v2 or v3 sink, or Bearer token of an `otlp` sink |
 | Enabled (`enabled`) | Only enabled sinks are written to and fully checked, so a disabled sink can be left half filled in |
+| Tag rules (`tag_rules`) | Optional. An ordered list of rules that rename, drop or add tag keys (`influxdb`) or attribute keys (`otlp`). Empty means the rows are written as they are. See [Tag and label rules](#tag-and-label-rules) |
 
 Passwords and tokens are stored as plain text in the database file (mode 0600) and are never sent back by the API.
 Leave the field empty when editing to keep the stored value. **Changing the URL clears the stored password and token**
@@ -468,6 +470,76 @@ curl -s -X POST http://localhost:15080/api/v1/sinks \
 The names in [OTLP metrics](#otlp-metrics) assume the backend converts them to Prometheus-style names. For VictoriaMetrics
 start it with `-opentelemetry.usePrometheusNaming`. Other backends may name them differently, so check the stored names
 in your backend.
+
+### Tag and label rules
+
+Each sink can have rules (`tag_rules`) that rename, drop or add the keys of the tags it writes (`influxdb` sinks)
+or of the attributes it sends (`otlp` sinks; the UI and the backend call them labels). A sink without rules writes exactly what
+[InfluxDB metrics](#influxdb-metrics) and [OTLP metrics](#otlp-metrics) describe.
+
+| Action (`action`) | Keys of the rule | What it does |
+|-------------------|------------------|--------------|
+| `rename` | `key`, `new_key` | Moves the value of `key` to `new_key`. An existing `new_key` is overwritten. Nothing happens when `key` is not there |
+| `drop` | `key` | Removes `key` |
+| `add` | `key`, `value` | Sets `key` to the fixed `value`. An existing `key` is overwritten |
+
+- Rules run in the order they are listed, on every row or data point of the sink. Each rule sees the result of the ones before it.
+- `influxdb` sinks: tags only. Measurement names, field names and field values stay as they are.
+- `otlp` sinks: `rename` and `drop` apply to data point attributes and resource attributes (such as `process.pid` on a process resource).
+  `add` puts the key on every data point only, and on a resource only changes a key that is already there. Metric names stay as they are.
+- Rules change keys, not values: there is no rule that rewrites the value of an existing tag or attribute.
+
+A save is rejected (400, like the other [Settings API](#settings-api) problems) unless:
+
+- `action` is `rename`, `drop` or `add`, and `key` is not empty.
+- A `rename` has a `new_key` that is not empty and differs from `key`.
+- An `add` has a `value` that is not empty (InfluxDB rejects empty tag values).
+- No key or value contains a line break.
+- A sink has at most 50 rules.
+
+In the settings UI, edit them in the sink dialog, under **Tag rules** for an `influxdb` sink or **Label rules** for an `otlp` sink. Through the API, send them with the sink:
+
+```sh
+curl -s -X POST http://localhost:15080/api/v1/sinks \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "site-a", "type": "influxdb", "url": "http://192.0.2.30:8086", "db": "telegraf",
+       "username": "<influxdb-user>", "password": "<change-me>",
+       "credential_id": "3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07", "enabled": true,
+       "tag_rules": [
+         {"action": "rename", "key": "host", "new_key": "hostname"},
+         {"action": "drop", "key": "time_diff"},
+         {"action": "add", "key": "env", "value": "dev"}
+       ]}'
+```
+
+With these rules a `swap` row of `emu-vgpu-01` changes like this. Tags are still written sorted by key, and the `uuid`
+value keeps the hostname because values are not changed.
+
+```text
+# before
+swap,cloud_service=openstack,collection_type=agent,credential_id=3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07,gpu_type=BARE_METAL,host=emu-vgpu-01,time_diff=0,type=host,uuid=3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07:emu-vgpu-01 free=8581344658i,server_time=1795713527i,total=8589934592i,used=8589934i,used_percent=0.1 1795713527434360688
+# after
+swap,cloud_service=openstack,collection_type=agent,credential_id=3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07,env=dev,gpu_type=BARE_METAL,hostname=emu-vgpu-01,type=host,uuid=3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07:emu-vgpu-01 free=8581344658i,server_time=1795713527i,total=8589934592i,used=8589934i,used_percent=0.1 1795713527434360688
+```
+
+On an `otlp` sink, `{"action": "rename", "key": "entity_id", "new_key": "node_id"}` moves the node key of every data
+point of `emu-vgpu-01`:
+
+```text
+# before
+system.uptime  entity_id=1a011d3e-2c7f-52df-b57c-ef644f3bc056
+# after
+system.uptime  node_id=1a011d3e-2c7f-52df-b57c-ef644f3bc056
+```
+
+**Changing keys can break the monitoring server that reads this data.** It finds InfluxDB rows by tags such as
+`credential_id`, `uuid` and `host`, and OTLP data by `entity_id`, so its queries no longer match renamed or dropped keys.
+Dropping a key that tells rows apart (such as `cpu` on `cpu` rows or `index` on `dcgm` rows) makes their points collide
+in the backend. Use rules only to match a reader that expects other names, and leave them empty otherwise.
+
+Two more things are not checked. A tag that a rule names after a field of the same measurement is dropped on `v3` sinks
+(see [InfluxDB v3](#influxdb-v3)), and v1 and v2 keep both, so InfluxQL needs `::tag` to tell them apart. Keys that the
+backend reserves (`time`, and `_measurement`, `_field`, `_value`, `_start`, `_stop` on v2) are not refused but break writes or queries.
 
 ## Custom topology
 

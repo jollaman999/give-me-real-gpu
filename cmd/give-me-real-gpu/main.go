@@ -420,13 +420,15 @@ func influxGenerator(sk store.Sink, topo *topology.Topology, s store.Settings) *
 		CredentialID: sk.CredentialID,
 		Seed:         s.Seed + int64(sk.ID),
 		XIDRate:      s.XIDRate,
+		TagRules:     sk.TagRules,
 	})
 }
 
 func otelGenerator(sk store.Sink, topo *topology.Topology, s store.Settings) *otelgen.Generator {
 	return otelgen.NewGenerator(topo, otelgen.Options{
-		Seed:    s.Seed + int64(sk.ID),
-		XIDRate: s.XIDRate,
+		Seed:     s.Seed + int64(sk.ID),
+		XIDRate:  s.XIDRate,
+		TagRules: sk.TagRules,
 	})
 }
 
