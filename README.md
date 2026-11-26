@@ -1,3 +1,5 @@
+**English** | [한국어](README.ko.md)
+
 # give-me-real-gpu
 
 An emulator that fills GPU monitoring screens without real GPU servers.
