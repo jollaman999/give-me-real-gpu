@@ -1,10 +1,10 @@
-// Package topology 는 emulator 가 흉내 내는 가짜 GPU 클라우드의 구성을 담는다.
-// 가짜 OpenStack API 와 지표 생성기가 같은 Topology 를 읽으므로,
-// nova 의 hypervisor_hostname·server id 와 InfluxDB 의 host·uuid 태그가 항상 같은 값이 된다.
+// Package topology describes the fake GPU cloud that the emulator imitates.
+// The fake OpenStack API and the metrics generator read the same Topology,
+// so nova's hypervisor_hostname and server id always match the host and uuid tags in InfluxDB.
 package topology
 
-// GPUMode 는 하이퍼바이저가 GPU 를 VM 에 나눠 주는 방식이다.
-// 값은 지표의 gpu_type 태그(대문자) 와 같다.
+// GPUMode is how a hypervisor hands its GPUs out to VMs.
+// The value matches the gpu_type tag (upper case) in the metrics.
 type GPUMode string
 
 const (
@@ -13,97 +13,97 @@ const (
 	ModePassthrough GPUMode = "PASSTHROUGH"
 )
 
-// Topology 는 가짜 클라우드 전체다.
+// Topology is the whole fake cloud.
 type Topology struct {
-	Region      string        `json:"region"`       // keystone catalog 의 region (예: RegionOne)
-	DomainID    string        `json:"domain_id"`    // keystone domain id (예: default)
-	ProjectID   string        `json:"project_id"`   // 모든 VM 이 속한 project id (32자 hex)
-	ProjectName string        `json:"project_name"` // project 이름
-	UserID      string        `json:"user_id"`      // keystone user id (32자 hex)
-	UserName    string        `json:"user_name"`    // keystone user 이름 (관리 플랫폼에 등록할 계정)
+	Region      string        `json:"region"`       // region in the keystone catalog (e.g. RegionOne)
+	DomainID    string        `json:"domain_id"`    // keystone domain id (e.g. default)
+	ProjectID   string        `json:"project_id"`   // project id that every VM belongs to (32 hex chars)
+	ProjectName string        `json:"project_name"` // project name
+	UserID      string        `json:"user_id"`      // keystone user id (32 hex chars)
+	UserName    string        `json:"user_name"`    // keystone user name (the account registered in the management platform)
 	Hypervisors []*Hypervisor `json:"hypervisors"`
 	Flavors     []*Flavor     `json:"flavors"`
 }
 
-// Hypervisor 는 nova compute 노드 하나다.
+// Hypervisor is a single nova compute node.
 type Hypervisor struct {
-	ID       int     `json:"id"`        // nova hypervisor 정수 id (1부터)
-	UUID     string  `json:"uuid"`      // nova hypervisor uuid (microversion 2.53 이상에서 id 로 쓰임)
-	Hostname string  `json:"hostname"`  // hypervisor_hostname = service host = InfluxDB host 태그
-	HostIP   string  `json:"host_ip"`   // nova host_ip, net 지표의 ip 필드
-	Mode     GPUMode `json:"mode"`      // 이 노드의 GPU 분할 방식
-	VCPUs    int     `json:"vcpus"`     // 물리 vCPU 수
-	MemoryMB int     `json:"memory_mb"` // 물리 메모리
-	LocalGB  int     `json:"local_gb"`  // 로컬 디스크
-	// 호스트 nvidia 드라이버. passthrough 노드는 호스트에 드라이버가 없으므로 빈 문자열이다.
+	ID       int     `json:"id"`        // nova hypervisor integer id (starts at 1)
+	UUID     string  `json:"uuid"`      // nova hypervisor uuid (used as the id from microversion 2.53 on)
+	Hostname string  `json:"hostname"`  // hypervisor_hostname = service host = InfluxDB host tag
+	HostIP   string  `json:"host_ip"`   // nova host_ip, the ip field of net metrics
+	Mode     GPUMode `json:"mode"`      // how this node partitions its GPUs
+	VCPUs    int     `json:"vcpus"`     // physical vCPU count
+	MemoryMB int     `json:"memory_mb"` // physical memory
+	LocalGB  int     `json:"local_gb"`  // local disk
+	// Host nvidia driver. Empty on passthrough nodes, since the host has no driver there.
 	DriverVersion string `json:"driver_version"`
-	CUDAVersion   string `json:"cuda_version"` // 호스트 CUDA 드라이버 버전 (DCGM_FI_CUDA_DRIVER_VERSION 형식, 예: 13020)
+	CUDAVersion   string `json:"cuda_version"` // host CUDA driver version (DCGM_FI_CUDA_DRIVER_VERSION format, e.g. 13020)
 	GPUs          []*GPU `json:"gpus"`
 }
 
-// GPU 는 물리 GPU 한 장이다.
+// GPU is a single physical GPU.
 type GPU struct {
-	Index     int    `json:"index"`      // nvidia-smi index (0부터)
+	Index     int    `json:"index"`      // nvidia-smi index (starts at 0)
 	UUID      string `json:"uuid"`       // GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-	BusID     string `json:"bus_id"`     // 00000000:3B:00.0 형식 (nvidia-smi pci.bus_id)
-	HostBDF   string `json:"host_bdf"`   // 3b:00.0 형식 (gpu_vm_mapping host_bdf 태그, 소문자)
-	ModelName string `json:"model_name"` // 예: NVIDIA A100-SXM4-80GB
-	DeviceID  string `json:"device_id"`  // PCI device id 소문자 4자리 (예: 20b2). vendor 는 항상 10de
-	MemoryMiB int    `json:"memory_mib"` // 프레임버퍼 전체
-	VBIOS     string `json:"vbios"`      // 예: 92.00.45.00.03
-	Arch      string `json:"arch"`       // 예: Ampere, Hopper, Ada Lovelace, Turing
+	BusID     string `json:"bus_id"`     // 00000000:3B:00.0 format (nvidia-smi pci.bus_id)
+	HostBDF   string `json:"host_bdf"`   // 3b:00.0 format (gpu_vm_mapping host_bdf tag, lower case)
+	ModelName string `json:"model_name"` // e.g. NVIDIA A100-SXM4-80GB
+	DeviceID  string `json:"device_id"`  // PCI device id, 4 lower-case hex digits (e.g. 20b2). The vendor is always 10de
+	MemoryMiB int    `json:"memory_mib"` // total framebuffer
+	VBIOS     string `json:"vbios"`      // five dot-separated hex pairs
+	Arch      string `json:"arch"`       // e.g. Ampere, Hopper, Ada Lovelace, Turing
 
-	// VGPU 노드에서 이 GPU 에 만든 vGPU 종류. 다른 모드면 nil.
+	// vGPU type created on this GPU on a VGPU node. nil in other modes.
 	Profile *VGPUProfile `json:"profile,omitempty"`
-	// MIG 노드에서 이 GPU 를 나눈 GPU instance 목록. 다른 모드면 비어 있다.
+	// GPU instances this GPU is split into on a MIG node. Empty in other modes.
 	MIGInstances []*MIGInstance `json:"mig_instances,omitempty"`
-	// 이 GPU 를 쓰는 VM. VGPU 는 여러 개, MIG 는 instance 마다 최대 하나, passthrough 는 최대 하나.
-	// 비어 있으면 미할당 GPU 다.
+	// VMs using this GPU. VGPU allows several, MIG at most one per instance, passthrough at most one.
+	// An empty list means the GPU is unassigned.
 	VMs []*VM `json:"vms"`
 }
 
-// VGPUProfile 은 NVIDIA vGPU type 이다.
+// VGPUProfile is an NVIDIA vGPU type.
 type VGPUProfile struct {
-	Name          string `json:"name"`           // 예: NVIDIA A10-4Q, GRID T4-4Q (vgpu_model_name)
-	Type          string `json:"type"`           // mdev type 이름 (예: nvidia-592), vgpu_profile 필드
+	Name          string `json:"name"`           // e.g. NVIDIA A10-4Q, GRID T4-4Q (vgpu_model_name)
+	Type          string `json:"type"`           // mdev type name (e.g. nvidia-592), the vgpu_profile field
 	FramebufferMB int    `json:"framebuffer_mb"` // vgpu_fb_mb
 	MaxInstances  int    `json:"max_instances"`  // vgpu_max_instances
 }
 
-// MIGInstance 는 MIG GPU instance 하나다.
+// MIGInstance is a single MIG GPU instance.
 type MIGInstance struct {
-	GPUInstanceID int    `json:"gpu_instance_id"` // nvidia-smi 의 GI ID
-	Profile       string `json:"profile"`         // 예: 1g.10gb
-	Slices        int    `json:"slices"`          // 차지하는 compute slice 수 (1g=1 ... 7g=7)
+	GPUInstanceID int    `json:"gpu_instance_id"` // GI ID as reported by nvidia-smi
+	Profile       string `json:"profile"`         // e.g. 1g.10gb
+	Slices        int    `json:"slices"`          // number of compute slices it occupies (1g=1 ... 7g=7)
 	MemoryMiB     int    `json:"memory_mib"`
-	// MIG-backed vGPU 의 vGPU type (예: A100D-1-10C / nvidia-699). OpenStack 은 MIG 를 vGPU 로 붙인다.
+	// vGPU type of the MIG-backed vGPU (e.g. A100D-1-10C / nvidia-699). OpenStack attaches MIG as a vGPU.
 	VGPU *VGPUProfile `json:"vgpu_profile,omitempty"`
 }
 
-// VM 은 nova server 하나다. GPU 를 쓰는 VM 만 다룬다.
+// VM is a single nova server. Only VMs that use a GPU are modeled.
 type VM struct {
-	ID           string  `json:"id"`            // nova server id = libvirt domain uuid = openstack_vm_uuid 태그
-	Name         string  `json:"name"`          // server 이름 = VM 안 hostname = VM 지표의 host 태그
-	InstanceName string  `json:"instance_name"` // libvirt 이름 (예: instance-0000001a)
+	ID           string  `json:"id"`            // nova server id = libvirt domain uuid = openstack_vm_uuid tag
+	Name         string  `json:"name"`          // server name = hostname inside the VM = host tag of VM metrics
+	InstanceName string  `json:"instance_name"` // libvirt name (e.g. instance-0000001a)
 	FlavorID     string  `json:"flavor_id"`
 	IP           string  `json:"ip"`         // fixed ip
-	Hypervisor   string  `json:"hypervisor"` // 올라간 Hypervisor.Hostname
-	GPUIndex     int     `json:"gpu_index"`  // 올라간 GPU.Index
+	Hypervisor   string  `json:"hypervisor"` // Hypervisor.Hostname it runs on
+	GPUIndex     int     `json:"gpu_index"`  // GPU.Index it is attached to
 	Mode         GPUMode `json:"mode"`
-	// vGPU(MIG-backed 포함) 의 mdev uuid. vgpu_uuid 태그와 VM 안에서 본 GPU UUID 로 쓰인다. passthrough 는 빈 문자열.
+	// mdev uuid of the vGPU (including MIG-backed). Used as the vgpu_uuid tag and as the GPU UUID seen inside the VM. Empty for passthrough.
 	VGPUUUID string `json:"vgpu_uuid,omitempty"`
-	// MIG 노드에서 붙은 GPU instance id. MIG 가 아니면 -1.
+	// GPU instance id attached on a MIG node. -1 when not MIG.
 	MIGGPUInstanceID int `json:"mig_gpu_instance_id"`
-	// VM 안에서 본 PCI 주소 (예: 00:05.0). gpu_vm_mapping guest_bdf 태그와 VM dcgm 의 PCI_BUSID 에 쓰인다.
+	// PCI address seen inside the VM (e.g. 00:05.0). Used for the gpu_vm_mapping guest_bdf tag and the PCI_BUSID of VM dcgm.
 	GuestBDF string `json:"guest_bdf"`
-	// VM 안 nvidia 게스트 드라이버 버전.
+	// nvidia guest driver version inside the VM.
 	GuestDriverVersion string `json:"guest_driver_version"`
 	VCPUs              int    `json:"vcpus"`
 	MemoryMB           int    `json:"memory_mb"`
 	DiskGB             int    `json:"disk_gb"`
 }
 
-// Flavor 는 nova flavor 다. GPU flavor 는 ExtraSpecs 에 resources:VGPU 나 pci_passthrough:alias 를 갖는다.
+// Flavor is a nova flavor. GPU flavors carry resources:VGPU or pci_passthrough:alias in ExtraSpecs.
 type Flavor struct {
 	ID         string            `json:"id"`
 	Name       string            `json:"name"`
@@ -113,7 +113,7 @@ type Flavor struct {
 	ExtraSpecs map[string]string `json:"extra_specs"`
 }
 
-// AllVMs 는 하이퍼바이저·GPU 순서대로 모든 VM 을 돌려준다.
+// AllVMs returns every VM, ordered by hypervisor and then by GPU.
 func (t *Topology) AllVMs() []*VM {
 	var out []*VM
 	for _, h := range t.Hypervisors {
@@ -124,7 +124,7 @@ func (t *Topology) AllVMs() []*VM {
 	return out
 }
 
-// HypervisorByName 은 hostname 으로 하이퍼바이저를 찾는다. 없으면 nil.
+// HypervisorByName finds a hypervisor by hostname. Returns nil if there is none.
 func (t *Topology) HypervisorByName(name string) *Hypervisor {
 	for _, h := range t.Hypervisors {
 		if h.Hostname == name {
@@ -134,7 +134,7 @@ func (t *Topology) HypervisorByName(name string) *Hypervisor {
 	return nil
 }
 
-// FlavorByID 는 id 로 flavor 를 찾는다. 없으면 nil.
+// FlavorByID finds a flavor by id. Returns nil if there is none.
 func (t *Topology) FlavorByID(id string) *Flavor {
 	for _, f := range t.Flavors {
 		if f.ID == id {

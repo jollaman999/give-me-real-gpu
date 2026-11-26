@@ -15,34 +15,34 @@ var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-
 func TestStableUUID(t *testing.T) {
 	a := StableUUID("server", "emu-vgpu01-g0-1")
 	if a != StableUUID("server", "emu-vgpu01-g0-1") {
-		t.Fatalf("같은 이름에서 다른 UUID: %s", a)
+		t.Fatalf("same name gave different UUIDs: %s", a)
 	}
 	if !uuidRE.MatchString(a) {
-		t.Fatalf("UUID v5 형식 아님: %s", a)
+		t.Fatalf("not in UUID v5 format: %s", a)
 	}
 	if StableUUID("ab", "c") == StableUUID("a", "bc") {
-		t.Fatal("조각 경계가 다른데 같은 UUID")
+		t.Fatal("different part boundaries gave the same UUID")
 	}
 	if StableUUID("server", "x") == StableUUID("mdev", "x") {
-		t.Fatal("종류가 다른데 같은 UUID")
+		t.Fatal("different kinds gave the same UUID")
 	}
 	h := StableHex32("project", "emu-gpu")
 	if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(h) {
-		t.Fatalf("32자 hex 아님: %s", h)
+		t.Fatalf("not 32 hex chars: %s", h)
 	}
 }
 
 func TestDefaultDeterministicAndValid(t *testing.T) {
 	a, b := Default(), Default()
 	if !reflect.DeepEqual(a, b) {
-		t.Fatal("Default() 두 번 결과가 다르다")
+		t.Fatal("two Default() calls returned different results")
 	}
 	if err := a.Validate(); err != nil {
-		t.Fatalf("Default 가 Validate 실패: %v", err)
+		t.Fatalf("Default failed Validate: %v", err)
 	}
 }
 
-// 설계 문서 표의 노드별 GPU 마다 VM 수.
+// VMs per GPU for each node, as listed in the design document table.
 func TestDefaultMatchesDesign(t *testing.T) {
 	want := map[string][]int{
 		"emu-vgpu-01": {6, 4, 3, 0},
@@ -54,7 +54,7 @@ func TestDefaultMatchesDesign(t *testing.T) {
 	}
 	top := Default()
 	if len(top.Hypervisors) != len(want) {
-		t.Fatalf("노드 수 %d, 기대 %d", len(top.Hypervisors), len(want))
+		t.Fatalf("got %d nodes, want %d", len(top.Hypervisors), len(want))
 	}
 	total := 0
 	for _, h := range top.Hypervisors {
@@ -64,14 +64,14 @@ func TestDefaultMatchesDesign(t *testing.T) {
 			total += len(g.VMs)
 		}
 		if !reflect.DeepEqual(got, want[h.Hostname]) {
-			t.Errorf("%s GPU 별 VM 수 %v, 기대 %v", h.Hostname, got, want[h.Hostname])
+			t.Errorf("%s VMs per GPU %v, want %v", h.Hostname, got, want[h.Hostname])
 		}
-		t.Logf("%-12s %-11s GPU %d장 VM %d개 %v", h.Hostname, h.Mode, len(h.GPUs), sum(got), got)
+		t.Logf("%-12s %-11s %d GPUs %d VMs %v", h.Hostname, h.Mode, len(h.GPUs), sum(got), got)
 	}
 	if total != 45 || len(top.AllVMs()) != 45 {
-		t.Errorf("총 VM %d (AllVMs %d), 기대 45", total, len(top.AllVMs()))
+		t.Errorf("total VMs %d (AllVMs %d), want 45", total, len(top.AllVMs()))
 	}
-	t.Logf("총 VM %d", total)
+	t.Logf("total VMs %d", total)
 
 	migInst := map[string][]int{}
 	for _, h := range top.Hypervisors {
@@ -84,7 +84,7 @@ func TestDefaultMatchesDesign(t *testing.T) {
 	}
 	if !reflect.DeepEqual(migInst["emu-mig-01"], []int{7, 3, 2, 1}) ||
 		!reflect.DeepEqual(migInst["emu-mig-02"], []int{7, 2}) {
-		t.Errorf("MIG instance 수 %v", migInst)
+		t.Errorf("MIG instance counts %v", migInst)
 	}
 }
 
@@ -124,17 +124,17 @@ func TestDefaultCoverage(t *testing.T) {
 	}
 	for _, m := range []GPUMode{ModeVGPU, ModeMIG, ModePassthrough} {
 		if !modes[m] {
-			t.Errorf("모드 %s 노드가 없다", m)
+			t.Errorf("no node with mode %s", m)
 		}
 	}
 	if !multi[ModeVGPU] || !multi[ModeMIG] {
-		t.Errorf("VM 2개 이상인 GPU: %v (VGPU·MIG 둘 다 있어야 한다)", multi)
+		t.Errorf("modes with a GPU hosting 2+ VMs: %v (need both VGPU and MIG)", multi)
 	}
 	if !unassignedGPU {
-		t.Error("미할당 GPU 가 없다")
+		t.Error("no unassigned GPU")
 	}
 	if !unassignedMIG {
-		t.Error("미할당 MIG instance 가 없다")
+		t.Error("no unassigned MIG instance")
 	}
 }
 
@@ -157,16 +157,16 @@ func TestDefaultFields(t *testing.T) {
 			for _, vm := range g.VMs {
 				f := top.FlavorByID(vm.FlavorID)
 				if f == nil || f.VCPUs != vm.VCPUs || f.RAMMB != vm.MemoryMB {
-					t.Errorf("%s flavor 불일치", vm.Name)
+					t.Errorf("%s flavor mismatch", vm.Name)
 					continue
 				}
 				_, pt := f.ExtraSpecs["pci_passthrough:alias"]
 				_, vg := f.ExtraSpecs["resources:VGPU"]
 				if (vm.Mode == ModePassthrough) != pt || (vm.Mode != ModePassthrough) != vg {
-					t.Errorf("%s mode %s 인데 flavor %s", vm.Name, vm.Mode, f.Name)
+					t.Errorf("%s has mode %s but flavor %s", vm.Name, vm.Mode, f.Name)
 				}
 				if vm.ID != StableUUID("server", vm.Name) {
-					t.Errorf("%s id 가 이름에서 나온 값이 아니다", vm.Name)
+					t.Errorf("%s id is not derived from its name", vm.Name)
 				}
 			}
 			if h.Mode == ModeMIG {
@@ -181,7 +181,7 @@ func TestDefaultFields(t *testing.T) {
 	}
 	v := top.AllVMs()[0]
 	if v.Name != "emu-vgpu01-g0-1" || v.InstanceName != "instance-00000001" || v.IP != "198.51.100.11" {
-		t.Errorf("첫 VM %s %s %s", v.Name, v.InstanceName, v.IP)
+		t.Errorf("first VM %s %s %s", v.Name, v.InstanceName, v.IP)
 	}
 }
 
@@ -189,13 +189,13 @@ func TestAddresses(t *testing.T) {
 	cases := map[int]string{1: "198.51.100.11", 244: "198.51.100.254", 245: "203.0.113.1", 498: "203.0.113.254"}
 	for seq, want := range cases {
 		if got := vmIP(seq); got != want {
-			t.Errorf("vmIP(%d) = %s, 기대 %s", seq, got, want)
+			t.Errorf("vmIP(%d) = %s, want %s", seq, got, want)
 		}
 	}
 	func() {
 		defer func() {
 			if recover() == nil {
-				t.Error("vmIP(499) 가 panic 하지 않았다")
+				t.Error("vmIP(499) did not panic")
 			}
 		}()
 		vmIP(499)
@@ -210,10 +210,10 @@ func TestAddresses(t *testing.T) {
 	check := func(who, ip string) {
 		m := testNet.FindStringSubmatch(ip)
 		if m == nil || m[2] == "0" || m[2] == "255" {
-			t.Errorf("%s 의 주소 %q 가 문서용 대역의 호스트 주소가 아니다", who, ip)
+			t.Errorf("%s has address %q, which is not a host address in a documentation range", who, ip)
 		}
 		if ips[ip] {
-			t.Errorf("주소 중복: %s", ip)
+			t.Errorf("duplicate address: %s", ip)
 		}
 		ips[ip] = true
 	}
@@ -243,12 +243,12 @@ func TestLoadRoundTrip(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatal("JSON 으로 쓰고 다시 읽은 토폴로지가 Default 와 다르다")
+		t.Fatal("topology written to JSON and read back differs from Default")
 	}
 
 	empty, err := Load("")
 	if err != nil || !reflect.DeepEqual(empty, want) {
-		t.Fatalf(`Load("") 가 Default 와 다르다: %v`, err)
+		t.Fatalf(`Load("") differs from Default: %v`, err)
 	}
 }
 
@@ -268,20 +268,20 @@ func TestLoadRejects(t *testing.T) {
 	}
 	for name, body := range cases {
 		if _, err := Load(write(name, body)); err == nil {
-			t.Errorf("%s 를 받아들였다", name)
+			t.Errorf("%s was accepted", name)
 		}
 	}
 	if _, err := Load(filepath.Join(dir, "missing.json")); err == nil {
-		t.Error("없는 파일을 받아들였다")
+		t.Error("missing file was accepted")
 	}
 
-	// 형식은 맞지만 Validate 에 걸리는 파일.
+	// A well-formed file that fails Validate.
 	bad := Default()
 	bad.AllVMs()[1].Name = bad.AllVMs()[0].Name
 	data, _ := json.Marshal(bad)
 	_, err := Load(write("dup.json", string(data)))
-	if err == nil || !strings.Contains(err.Error(), "vm name 중복") {
-		t.Errorf("중복 VM 이름 파일: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "duplicate vm name") {
+		t.Errorf("file with duplicate VM names: %v", err)
 	}
 }
 
@@ -295,68 +295,68 @@ func TestValidateRejects(t *testing.T) {
 		mutate func(*Topology)
 		want   string
 	}{
-		{"VM 이름 중복", func(tp *Topology) {
+		{"duplicate VM name", func(tp *Topology) {
 			vms := tp.AllVMs()
 			vms[3].Name = vms[2].Name
-		}, "vm name 중복"},
-		{"VM id 중복", func(tp *Topology) {
+		}, "duplicate vm name"},
+		{"duplicate VM id", func(tp *Topology) {
 			vms := tp.AllVMs()
 			vms[3].ID = vms[2].ID
-		}, "vm id 중복"},
-		{"hypervisor 이름 중복", func(tp *Topology) {
+		}, "duplicate vm id"},
+		{"duplicate hypervisor name", func(tp *Topology) {
 			tp.Hypervisors[1].Hostname = tp.Hypervisors[0].Hostname
-		}, "hypervisor hostname 중복"},
-		{"flavor 이름 중복", func(tp *Topology) {
+		}, "duplicate hypervisor hostname"},
+		{"duplicate flavor name", func(tp *Topology) {
 			tp.Flavors[1].Name = tp.Flavors[0].Name
-		}, "flavor name 중복"},
-		{"없는 flavor", func(tp *Topology) {
+		}, "duplicate flavor name"},
+		{"missing flavor", func(tp *Topology) {
 			tp.AllVMs()[0].FlavorID = "no-such-flavor"
-		}, `flavor "no-such-flavor" 가 없다`},
-		{"없는 hypervisor", func(tp *Topology) {
+		}, `flavor "no-such-flavor" not found`},
+		{"missing hypervisor", func(tp *Topology) {
 			tp.AllVMs()[0].Hypervisor = "emu-nowhere"
 		}, `hypervisor "emu-nowhere"`},
-		{"틀린 gpu_index", func(tp *Topology) {
+		{"wrong gpu_index", func(tp *Topology) {
 			tp.AllVMs()[0].GPUIndex = 9
 		}, "gpu_index 9"},
-		{"passthrough GPU 에 VM 2개", func(tp *Topology) {
+		{"two VMs on a passthrough GPU", func(tp *Topology) {
 			g0 := findGPU(tp, "emu-pt-02", 0)
 			g1 := findGPU(tp, "emu-pt-02", 1)
 			vm := g1.VMs[0]
 			vm.GPUIndex = 0
 			g0.VMs = append(g0.VMs, vm)
 			g1.VMs = nil
-		}, "passthrough GPU 에 VM 이 2 개다"},
-		{"모드 불일치", func(tp *Topology) {
+		}, "passthrough GPU has 2 VMs"},
+		{"mode mismatch", func(tp *Topology) {
 			findGPU(tp, "emu-vgpu-01", 0).VMs[0].Mode = ModePassthrough
 		}, "hypervisor mode"},
-		{"vGPU 최대 초과", func(tp *Topology) {
+		{"vGPU maximum exceeded", func(tp *Topology) {
 			findGPU(tp, "emu-vgpu-02", 0).Profile.MaxInstances = 3
-		}, "vGPU 최대 3 개를 넘는다"},
-		{"없는 MIG instance", func(tp *Topology) {
+		}, "exceed the vGPU maximum of 3"},
+		{"missing MIG instance", func(tp *Topology) {
 			findGPU(tp, "emu-mig-01", 0).VMs[0].MIGGPUInstanceID = 99
-		}, "GPU instance 99 가"},
-		{"MIG instance 이중 할당", func(tp *Topology) {
+		}, "GPU instance 99 not found"},
+		{"MIG instance assigned twice", func(tp *Topology) {
 			g := findGPU(tp, "emu-mig-01", 0)
 			g.VMs[1].MIGGPUInstanceID = g.VMs[0].MIGGPUInstanceID
-		}, "이미 쓴다"},
-		{"MIG slice 초과", func(tp *Topology) {
+		}, "is already used by"},
+		{"MIG slices exceeded", func(tp *Topology) {
 			g := findGPU(tp, "emu-mig-01", 3)
 			g.MIGInstances = append(g.MIGInstances, &MIGInstance{GPUInstanceID: 7, Profile: "1g.10gb", Slices: 1})
-		}, "slice 합 8"},
-		{"MIG 아닌데 instance id", func(tp *Topology) {
+		}, "slice total 8"},
+		{"instance id on a non-MIG node", func(tp *Topology) {
 			findGPU(tp, "emu-pt-01", 0).VMs[0].MIGGPUInstanceID = 0
-		}, "-1 이어야 한다"},
+		}, "must be -1"},
 	}
 	for _, c := range cases {
 		tp := Default()
 		c.mutate(tp)
 		err := tp.Validate()
 		if err == nil {
-			t.Errorf("%s: Validate 가 통과시켰다", c.name)
+			t.Errorf("%s: Validate accepted it", c.name)
 			continue
 		}
 		if !strings.Contains(err.Error(), c.want) {
-			t.Errorf("%s: 오류에 %q 가 없다: %v", c.name, c.want, err)
+			t.Errorf("%s: error does not contain %q: %v", c.name, c.want, err)
 		}
 	}
 }

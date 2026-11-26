@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// 기본 토폴로지의 고정 값.
+// Fixed values of the default topology.
 const (
 	defaultRegion      = "RegionOne"
 	defaultDomainID    = "default"
@@ -20,8 +20,8 @@ const (
 	passthruGuest = "580.95.05"
 )
 
-// 가짜 주소는 문서용 대역(TEST-NET)만 쓴다. 실제로 접속하지 않는 값이다.
-// 하이퍼바이저는 TEST-NET-1 의 .11 부터, VM 은 TEST-NET-2 의 .11 부터 쓰고 모자라면 TEST-NET-3 으로 넘어간다.
+// Fake addresses come only from the documentation ranges (TEST-NET) and are never connected to.
+// Hypervisors start at .11 of TEST-NET-1, VMs start at .11 of TEST-NET-2 and spill over into TEST-NET-3.
 const (
 	hostIPFirst = 11
 	vmIPFirst   = 11
@@ -36,13 +36,13 @@ func ipv4(net [3]string, host int) string {
 	return strings.Join([]string{net[0], net[1], net[2], strconv.Itoa(host)}, ".")
 }
 
-// hostIP 는 i 번째(0부터) 하이퍼바이저의 host_ip 다.
+// hostIP returns the host_ip of the i-th hypervisor (0-based).
 func hostIP(i int) string {
 	return ipv4(hostIPNet, hostIPFirst+i)
 }
 
-// vmIP 는 seq 번째(1부터) VM 의 fixed ip 다. 첫 대역의 .254 다음은 둘째 대역의 .1 이다.
-// 두 대역을 다 쓰면 panic 한다 (기본 토폴로지는 그만큼 크지 않다).
+// vmIP returns the fixed ip of the seq-th VM (1-based). After .254 of the first range comes .1 of the second.
+// It panics once both ranges are used up (the default topology is nowhere near that big).
 func vmIP(seq int) string {
 	n := vmIPFirst + seq - 1
 	for _, net := range vmIPNets {
@@ -51,17 +51,17 @@ func vmIP(seq int) string {
 		}
 		n -= 254
 	}
-	panic(fmt.Sprintf("VM 주소 대역을 다 썼다 (seq %d)", seq))
+	panic(fmt.Sprintf("VM address ranges exhausted (seq %d)", seq))
 }
 
-// vbios 는 VBIOS 버전 문자열(점으로 이은 2자리 hex 다섯 개)을 만든다.
-// 소스에 점 네 개짜리 숫자를 그대로 두면 IP 로 오인되므로 조각으로 적는다.
+// vbios builds a VBIOS version string (five dot-separated 2-digit hex pairs).
+// The parts are passed separately because a literal with four dots would be mistaken for an IP address.
 func vbios(parts ...string) string {
 	return strings.Join(parts, ".")
 }
 
-// gpuModel 은 물리 GPU 종류 하나의 고정 값이다.
-// VBIOS 는 T4 만 실제 노드에서 본 값이고 나머지는 실측 아님.
+// gpuModel holds the fixed values of one physical GPU model.
+// Only the T4 VBIOS was taken from a real node; the others are not measured.
 type gpuModel struct {
 	name      string
 	deviceID  string
@@ -79,9 +79,9 @@ var (
 	modelA100PCIE40 = gpuModel{"NVIDIA A100-PCIE-40GB", "20f1", 40960, vbios("92", "00", "25", "00", "08"), "Ampere"}
 )
 
-// migProfile 은 MIG GPU instance 종류 하나다.
-// giIDs 는 그 종류를 꽉 채워 만들었을 때 nvidia-smi 가 주는 GI ID 순서다 (1g 7..13, 2g 3..5, 3g 1..2, 7g 0).
-// vgpu 는 그 instance 에 붙는 MIG-backed vGPU type 이다. type 번호(nvidia-NNN)는 실측 아님.
+// migProfile is one kind of MIG GPU instance.
+// giIDs is the GI ID order nvidia-smi assigns when the GPU is filled with this kind (1g 7..13, 2g 3..5, 3g 1..2, 7g 0).
+// vgpu is the MIG-backed vGPU type attached to the instance. The type numbers (nvidia-NNN) are not measured.
 type migProfile struct {
 	name   string
 	slices int
@@ -106,15 +106,15 @@ var (
 		VGPUProfile{"NVIDIA H100XM-3-40C", "nvidia-1076", 40960, 2}, "emu-mig-3g"}
 )
 
-// migPlan 은 MIG GPU 한 장의 계획이다. instances 개를 만들고 앞에서부터 vms 개에 VM 을 붙인다.
+// migPlan is the layout of one MIG GPU: create instances GPU instances and attach a VM to the first vms of them.
 type migPlan struct {
 	profile   migProfile
 	instances int
 	vms       int
 }
 
-// nodeSpec 은 기본 토폴로지의 노드 하나다.
-// VGPU·PASSTHROUGH 는 vmCounts(GPU 마다 VM 수), MIG 는 mig(GPU 마다 계획)를 쓴다.
+// nodeSpec is one node of the default topology.
+// VGPU and PASSTHROUGH nodes use vmCounts (VMs per GPU), MIG nodes use mig (a plan per GPU).
 type nodeSpec struct {
 	hostname string
 	short    string
@@ -179,7 +179,7 @@ var defaultNodes = []nodeSpec{
 	},
 }
 
-// defaultFlavors 는 GPU flavor 목록이다. MIG flavor 는 trait 로 instance 크기를 고른다.
+// defaultFlavors returns the GPU flavors. MIG flavors select the instance size through a trait.
 func defaultFlavors() []*Flavor {
 	mk := func(name string, vcpus, ramMB, diskGB int, specs map[string]string) *Flavor {
 		return &Flavor{
@@ -209,8 +209,8 @@ func defaultFlavors() []*Flavor {
 	}
 }
 
-// Default 는 설계 문서의 6노드 기본 토폴로지를 만든다.
-// 모든 id 는 이름에서 결정적으로 나오므로 몇 번 불러도 같은 값이다.
+// Default builds the six-node default topology from the design document.
+// Every id is derived deterministically from names, so repeated calls return identical values.
 func Default() *Topology {
 	t := &Topology{
 		Region:      defaultRegion,
