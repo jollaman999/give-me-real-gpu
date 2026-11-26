@@ -1,0 +1,5 @@
+# Real settings (contain passwords and credential ids)
+config.json
+emulator.env
+/bin/
+.claude/

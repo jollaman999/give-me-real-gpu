@@ -1,0 +1,9 @@
+.git
+.claude
+bin
+config.json
+emulator.env
+*.md
+Dockerfile
+compose.yaml
+Makefile
