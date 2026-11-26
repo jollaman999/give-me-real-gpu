@@ -2,7 +2,7 @@
 
 # give-me-real-gpu
 
-![설정 화면 데모](docs/demo.gif)
+![설정 화면 데모](docs/demo.ko.gif)
 
 실제 GPU 서버 없이 GPU 모니터링 화면을 채워 주는 에뮬레이터입니다.
 
@@ -758,8 +758,8 @@ make up / make down
 Go 표준 라이브러리 밖에서는 설정 화면 서버에 echo 를, 설정 DB 에 gorm 과 순수 Go sqlite 드라이버(cgo 없음)를 씁니다.
 이미지는 `golang:1.27-alpine` 에서 빌드하고 `gcr.io/distroless/static-debian12:nonroot` 에서 실행합니다.
 
-이 문서 맨 위의 데모 GIF(`docs/demo.gif`)를 다시 만들려면 `tools/demo/run.sh` 를 실행합니다. node, ffmpeg, Chrome 이
-필요하며 자세한 것은 `tools/demo/README.md` 에 있습니다.
+이 문서 맨 위의 데모 GIF(`docs/demo.ko.gif`)를 다시 만들려면 `DEMO_LANG=ko tools/demo/run.sh` 를 실행합니다. 영어판의
+`docs/demo.gif` 는 `DEMO_LANG` 없이 실행합니다. node, ffmpeg, Chrome 이 필요하며 자세한 것은 `tools/demo/README.md` 에 있습니다.
 
 ## 주의할 점
 

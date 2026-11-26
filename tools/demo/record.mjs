@@ -20,6 +20,9 @@ const WIDTH = Number(args.width || 1280);
 const HEIGHT = Number(args.height || 800);
 const LANG_KEY = process.env.DEMO_LANG_KEY || "gmrg.lang";
 const THEME_KEY = process.env.DEMO_THEME_KEY || "gmrg.theme";
+// LANG is the language of the page: "en" or "ko".
+const LANG = process.env.DEMO_LANG || "en";
+const LOCALE = LANG === "ko" ? "ko-KR" : "en-US";
 
 function parseArgs(list) {
   const out = {};
@@ -375,7 +378,7 @@ async function scenes() {
   // Sinks list, then the site-b sink: InfluxDB v2 with tag rules.
   await openTab("sinks");
   await sleep(1600);
-  const edit = await evaluate(`window.__demo.rowAction("site-b", ["site-a", "site-c"], "edit", "i")`);
+  const edit = await evaluate(`window.__demo.rowAction("site-b", ["site-a", "site-c"], "edit|수정", "i")`);
   if (!edit) throw new Error("no Edit button in the site-b row");
   await click(edit);
   await waitFor("the sink dialog", "window.__demo.hasDialog()", 3000);
@@ -388,7 +391,7 @@ async function scenes() {
   await moveTo({ x: WIDTH / 2, y: HEIGHT / 2 }, 300);
   await wheel(160, 6);
   await sleep(2000);
-  const cancel = await evaluate(`window.__demo.button("^(cancel|close)$", "i")`);
+  const cancel = await evaluate(`window.__demo.button("^(cancel|close|취소|닫기)$", "i")`);
   if (cancel) {
     await click(cancel);
   } else {
@@ -441,10 +444,10 @@ async function main() {
   await cdp.send("Runtime.enable");
   await cdp.send("Emulation.setDeviceMetricsOverride", { width: WIDTH, height: HEIGHT, deviceScaleFactor: 1, mobile: false });
   await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
-  await cdp.send("Emulation.setLocaleOverride", { locale: "en-US" }).catch(() => {});
+  await cdp.send("Emulation.setLocaleOverride", { locale: LOCALE }).catch(() => {});
   await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
     source: `try {
-      localStorage.setItem(${JSON.stringify(LANG_KEY)}, "en");
+      localStorage.setItem(${JSON.stringify(LANG_KEY)}, ${JSON.stringify(LANG)});
       localStorage.setItem(${JSON.stringify(THEME_KEY)}, "dark");
     } catch (e) {}
     document.documentElement.setAttribute("data-theme", "dark");`

@@ -31,6 +31,7 @@ larger than the size limit, the frame rate and the number of colors are lowered 
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
+| `DEMO_LANG` | `en` | page language, `en` or `ko`. `ko` writes `docs/demo.ko.gif` by default |
 | `DEMO_LISTEN_PORT` | `27700` | loopback port of the fake OpenStack API |
 | `DEMO_UI_PORT` | `27780` | loopback port of the settings UI |
 | `DEMO_FPS` | `10` | screenshots per second and the first GIF frame rate tried |

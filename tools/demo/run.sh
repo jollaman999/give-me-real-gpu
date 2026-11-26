@@ -5,12 +5,16 @@
 #
 #   tools/demo/run.sh [output.gif]
 #
-# The output defaults to docs/demo.gif. See tools/demo/README.md for the environment variables.
+# The output defaults to docs/demo.gif (docs/demo.ko.gif with DEMO_LANG=ko). See tools/demo/README.md for the environment variables.
 set -euo pipefail
 
 DEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$DEMO_DIR/../.." && pwd)"
-OUT="${1:-$REPO_DIR/docs/demo.gif}"
+DEMO_LANG="${DEMO_LANG:-en}"
+case "$DEMO_LANG" in en | ko) ;; *) echo "error: DEMO_LANG must be en or ko" >&2; exit 1 ;; esac
+export DEMO_LANG
+if [ "$DEMO_LANG" = ko ]; then DEFAULT_OUT="$REPO_DIR/docs/demo.ko.gif"; CHROME_LANG=ko-KR; else DEFAULT_OUT="$REPO_DIR/docs/demo.gif"; CHROME_LANG=en-US; fi
+OUT="${1:-$DEFAULT_OUT}"
 LISTEN_PORT="${DEMO_LISTEN_PORT:-27700}"
 UI_PORT="${DEMO_UI_PORT:-27780}"
 CHROME="${CHROME:-google-chrome}"
@@ -137,7 +141,7 @@ api POST /sinks '{
 log "starting headless Chrome"
 mkdir -p "$WORK/chrome" "$WORK/frames"
 "$CHROME" --headless --remote-debugging-port=0 --user-data-dir="$WORK/chrome" \
-	--window-size=1280,800 --lang=en-US --hide-scrollbars --force-color-profile=srgb \
+	--window-size=1280,800 --lang="$CHROME_LANG" --hide-scrollbars --force-color-profile=srgb \
 	--no-first-run --no-default-browser-check --disable-extensions --disable-sync \
 	--disable-background-networking --password-store=basic --use-mock-keychain \
 	about:blank >"$WORK/chrome.log" 2>&1 &
