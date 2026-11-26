@@ -33,22 +33,39 @@
     });
   }
 
+  var INFLUX_VERSIONS = ["v1", "v2", "v3"];
+
+  // influxVersion returns v1, v2 or v3. Anything else, including empty, is v1.
+  function influxVersion(v) {
+    var s = String(v || "").trim().toLowerCase();
+    return INFLUX_VERSIONS.indexOf(s) >= 0 ? s : "v1";
+  }
+
+  // sinkVariant names the form layout: "influxdb-v1", "influxdb-v2", "influxdb-v3" or the type itself.
+  function sinkVariant(type, version) {
+    return type === "influxdb" ? "influxdb-" + influxVersion(version) : String(type || "");
+  }
+
   // sinkPayload turns form values into the body of POST/PUT /api/v1/sinks.
-  // Fields of the other type are sent empty. Secrets are only sent when typed.
+  // Fields the chosen type and version do not use are sent empty. Secrets are only sent when typed.
   function sinkPayload(v) {
     var influx = v.type === "influxdb";
-    var otlp = v.type === "otlp";
+    var variant = sinkVariant(v.type, v.influx_version);
+    var basic = variant === "otlp" || variant === "influxdb-v1";
+    var bearer = variant === "otlp" || variant === "influxdb-v2" || variant === "influxdb-v3";
     var body = {
       name: String(v.name || "").trim(),
       type: v.type,
       url: String(v.url || "").trim(),
+      influx_version: influx ? influxVersion(v.influx_version) : "",
+      org: variant === "influxdb-v2" ? String(v.org || "").trim() : "",
       db: influx ? String(v.db || "").trim() : "",
-      username: String(v.username || "").trim(),
+      username: basic ? String(v.username || "").trim() : "",
       credential_id: influx ? String(v.credential_id || "").trim() : "",
       enabled: !!v.enabled
     };
-    if (v.password) body.password = v.password;
-    if (otlp && v.token) body.token = v.token;
+    if (basic && v.password) body.password = v.password;
+    if (bearer && v.token) body.token = v.token;
     return body;
   }
 
@@ -63,6 +80,8 @@
     pickLanguage: pickLanguage,
     initialLanguage: initialLanguage,
     format: format,
+    influxVersion: influxVersion,
+    sinkVariant: sinkVariant,
     sinkPayload: sinkPayload,
     secretKept: secretKept
   };
@@ -250,8 +269,8 @@
     return el("span", { className: "badge " + (v ? "badge-ok" : "badge-off"), text: t(v ? "common.on" : "common.off") });
   }
 
-  function typeLabel(type) {
-    if (type === "influxdb") return t("sinks.type_influxdb_short");
+  function typeLabel(type, version) {
+    if (type === "influxdb") return t("sinks.type_influxdb_short") + (version === undefined ? "" : " " + influxVersion(version));
     if (type === "otlp") return t("sinks.type_otlp_short");
     return type || "-";
   }
@@ -417,8 +436,8 @@
 
   function sinkValues(s) {
     return {
-      name: s.name, type: s.type, url: s.url, db: s.db, username: s.username,
-      credential_id: s.credential_id, enabled: s.enabled, password: "", token: ""
+      name: s.name, type: s.type, url: s.url, influx_version: influxVersion(s.influx_version), org: s.org,
+      db: s.db, username: s.username, credential_id: s.credential_id, enabled: s.enabled, password: "", token: ""
     };
   }
 
@@ -469,7 +488,7 @@
       toggle.addEventListener("change", function () { toggleSink(s, toggle.checked, toggle); });
       tbody.appendChild(el("tr", {}, [
         el("td", { attrs: { "data-label": t("sinks.col_name") } }, [el("strong", { text: s.name })]),
-        el("td", { attrs: { "data-label": t("sinks.col_type") }, text: typeLabel(s.type) }),
+        el("td", { attrs: { "data-label": t("sinks.col_type") }, text: typeLabel(s.type, s.influx_version || "") }),
         el("td", { className: "wrap", attrs: { "data-label": t("sinks.col_url") } }, [el("code", { text: s.url || "-" })]),
         el("td", { attrs: { "data-label": t("sinks.col_enabled") } }, [el("label", { className: "switch" }, [toggle, el("span", { className: "slider", attrs: { "aria-hidden": "true" } })])]),
         el("td", { className: "row-actions" }, [
@@ -482,10 +501,15 @@
 
   function openSinkDialog(s) {
     state.editing = { original: s || null };
-    var v = s ? sinkValues(s) : { name: "", type: "influxdb", url: "", db: "", username: "", credential_id: "", enabled: true, password: "", token: "" };
+    var v = s ? sinkValues(s) : {
+      name: "", type: "influxdb", url: "", influx_version: "v1", org: "", db: "", username: "",
+      credential_id: "", enabled: true, password: "", token: ""
+    };
     $("s-name").value = v.name || "";
     $("s-type").value = v.type === "otlp" ? "otlp" : "influxdb";
     $("s-url").value = v.url || "";
+    $("s-influx_version").value = influxVersion(v.influx_version);
+    $("s-org").value = v.org || "";
     $("s-db").value = v.db || "";
     $("s-username").value = v.username || "";
     $("s-password").value = "";
@@ -509,15 +533,36 @@
     if (!state.editing) return;
     var orig = state.editing.original;
     var type = $("s-type").value;
+    var variant = sinkVariant(type, $("s-influx_version").value);
     var url = $("s-url").value;
     $("sink-dialog-title").textContent = orig ? t("sinks.edit_title", { name: orig.name }) : t("sinks.add_title");
     document.querySelectorAll("#sink-form [data-for]").forEach(function (n) {
-      n.hidden = n.getAttribute("data-for") !== type;
+      var on = n.getAttribute("data-for").split(" ");
+      n.hidden = on.indexOf(type) < 0 && on.indexOf(variant) < 0;
     });
-    $("s-url").placeholder = type === "otlp"
-      ? "http://192.0.2.20:8429/opentelemetry/v1/metrics"
-      : "http://192.0.2.10:8086";
-    $("s-url-hint").textContent = t(type === "otlp" ? "sinks.url_hint_otlp" : "sinks.url_hint_influxdb");
+    if (variant === "otlp") {
+      $("s-url").placeholder = "http://192.0.2.20:8429/opentelemetry/v1/metrics";
+      $("s-url-hint").textContent = t("sinks.url_hint_otlp");
+      $("s-token-label").textContent = t("sinks.token");
+      $("s-token-hint").textContent = "";
+    } else if (variant === "influxdb-v2") {
+      $("s-url").placeholder = "http://192.0.2.20:8086";
+      $("s-url-hint").textContent = t("sinks.url_hint_influxdb_v2");
+      $("s-token-label").textContent = t("sinks.api_token");
+      $("s-token-hint").textContent = t("sinks.token_hint_v2");
+    } else if (variant === "influxdb-v3") {
+      $("s-url").placeholder = "http://192.0.2.20:8181";
+      $("s-url-hint").textContent = t("sinks.url_hint_influxdb_v3");
+      $("s-token-label").textContent = t("sinks.api_token");
+      $("s-token-hint").textContent = t("sinks.token_hint_v3");
+    } else {
+      $("s-url").placeholder = "http://192.0.2.20:8086";
+      $("s-url-hint").textContent = t("sinks.url_hint_influxdb_v1");
+      $("s-token-label").textContent = t("sinks.token");
+      $("s-token-hint").textContent = "";
+    }
+    $("s-token-hint").hidden = $("s-token-hint").textContent === "";
+    $("s-db-label").textContent = t(variant === "influxdb-v2" ? "sinks.bucket" : "sinks.db");
     $("s-password").placeholder = secretKept(orig, "password_set", url) ? t("common.unchanged") : "";
     $("s-token").placeholder = secretKept(orig, "token_set", url) ? t("common.unchanged") : "";
     var hadSecret = !!(orig && (orig.password_set || orig.token_set));
@@ -532,6 +577,8 @@
       name: $("s-name").value,
       type: $("s-type").value,
       url: $("s-url").value,
+      influx_version: $("s-influx_version").value,
+      org: $("s-org").value,
       db: $("s-db").value,
       username: $("s-username").value,
       password: $("s-password").value,
@@ -588,6 +635,7 @@
     $("sink-cancel").addEventListener("click", closeSinkDialog);
     $("sink-dialog").addEventListener("close", function () { state.editing = null; });
     $("s-type").addEventListener("change", renderSinkDialog);
+    $("s-influx_version").addEventListener("change", renderSinkDialog);
     $("s-url").addEventListener("input", renderSinkDialog);
     document.addEventListener("visibilitychange", function () {
       if (!document.hidden) refreshStatus();

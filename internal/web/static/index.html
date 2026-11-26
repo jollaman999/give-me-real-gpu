@@ -185,8 +185,16 @@
         <div class="field">
           <label for="s-type" data-i18n="sinks.type">Type</label>
           <select id="s-type" name="type">
-            <option value="influxdb" data-i18n="sinks.type_influxdb">InfluxDB v1 (line protocol)</option>
+            <option value="influxdb" data-i18n="sinks.type_influxdb">InfluxDB (line protocol)</option>
             <option value="otlp" data-i18n="sinks.type_otlp">OTLP/HTTP (OpenTelemetry)</option>
+          </select>
+        </div>
+        <div class="field" data-for="influxdb">
+          <label for="s-influx_version" data-i18n="sinks.influx_version">InfluxDB version</label>
+          <select id="s-influx_version" name="influx_version">
+            <option value="v1" data-i18n="sinks.influx_v1">v1 (InfluxDB 1.x)</option>
+            <option value="v2" data-i18n="sinks.influx_v2">v2 (InfluxDB 2.x)</option>
+            <option value="v3" data-i18n="sinks.influx_v3">v3 (InfluxDB 3)</option>
           </select>
         </div>
         <div class="field">
@@ -195,11 +203,15 @@
           <p class="hint" id="s-url-hint"></p>
           <p class="notice notice-warn" id="s-url-warning" hidden data-i18n="sinks.url_changed_warning">Changing the URL clears the saved password and token. Enter them again.</p>
         </div>
+        <div class="field" data-for="influxdb-v2">
+          <label for="s-org" data-i18n="sinks.org">Organization</label>
+          <input id="s-org" name="org" type="text" autocomplete="off" spellcheck="false">
+        </div>
         <div class="field" data-for="influxdb">
-          <label for="s-db" data-i18n="sinks.db">Database</label>
+          <label for="s-db" id="s-db-label">Database</label>
           <input id="s-db" name="db" type="text" autocomplete="off" spellcheck="false">
         </div>
-        <div class="field-row">
+        <div class="field-row" data-for="influxdb-v1 otlp">
           <div class="field">
             <label for="s-username" data-i18n="sinks.username">Username</label>
             <input id="s-username" name="username" type="text" autocomplete="off" spellcheck="false">
@@ -209,10 +221,11 @@
             <input id="s-password" name="password" type="password" autocomplete="new-password">
           </div>
         </div>
-        <p class="hint" data-i18n="sinks.basic_auth_hint">Basic authentication. Leave both empty for none.</p>
-        <div class="field" data-for="otlp">
-          <label for="s-token" data-i18n="sinks.token">Bearer token</label>
+        <p class="hint" data-for="influxdb-v1 otlp" data-i18n="sinks.basic_auth_hint">Basic authentication. Leave both empty for none.</p>
+        <div class="field" data-for="otlp influxdb-v2 influxdb-v3">
+          <label for="s-token" id="s-token-label">Bearer token</label>
           <input id="s-token" name="token" type="password" autocomplete="off">
+          <p class="hint" id="s-token-hint" hidden></p>
         </div>
         <div class="field" data-for="influxdb">
           <label for="s-credential_id" data-i18n="sinks.credential_id">Credential ID</label>

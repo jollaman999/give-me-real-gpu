@@ -83,33 +83,37 @@ type settingsIn struct {
 
 // sinkOut is one sink in GET /api/v1/sinks.
 type sinkOut struct {
-	ID           uint           `json:"id"`
-	Name         string         `json:"name"`
-	Type         store.SinkType `json:"type"`
-	URL          string         `json:"url"`
-	DB           string         `json:"db"`
-	Username     string         `json:"username"`
-	PasswordSet  bool           `json:"password_set"`
-	TokenSet     bool           `json:"token_set"`
-	CredentialID string         `json:"credential_id"`
-	Enabled      bool           `json:"enabled"`
+	ID            uint           `json:"id"`
+	Name          string         `json:"name"`
+	Type          store.SinkType `json:"type"`
+	URL           string         `json:"url"`
+	InfluxVersion string         `json:"influx_version"`
+	Org           string         `json:"org"`
+	DB            string         `json:"db"`
+	Username      string         `json:"username"`
+	PasswordSet   bool           `json:"password_set"`
+	TokenSet      bool           `json:"token_set"`
+	CredentialID  string         `json:"credential_id"`
+	Enabled       bool           `json:"enabled"`
 }
 
 // sinkIn is the body of POST /api/v1/sinks and PUT /api/v1/sinks/:id. id, password_set and token_set
 // are accepted so a client can send back what it got, and are ignored.
 type sinkIn struct {
-	ID           uint           `json:"id"`
-	Name         string         `json:"name"`
-	Type         store.SinkType `json:"type"`
-	URL          string         `json:"url"`
-	DB           string         `json:"db"`
-	Username     string         `json:"username"`
-	Password     string         `json:"password"`
-	Token        string         `json:"token"`
-	PasswordSet  bool           `json:"password_set"`
-	TokenSet     bool           `json:"token_set"`
-	CredentialID string         `json:"credential_id"`
-	Enabled      bool           `json:"enabled"`
+	ID            uint           `json:"id"`
+	Name          string         `json:"name"`
+	Type          store.SinkType `json:"type"`
+	URL           string         `json:"url"`
+	InfluxVersion string         `json:"influx_version"`
+	Org           string         `json:"org"`
+	DB            string         `json:"db"`
+	Username      string         `json:"username"`
+	Password      string         `json:"password"`
+	Token         string         `json:"token"`
+	PasswordSet   bool           `json:"password_set"`
+	TokenSet      bool           `json:"token_set"`
+	CredentialID  string         `json:"credential_id"`
+	Enabled       bool           `json:"enabled"`
 }
 
 type handler struct {
@@ -242,13 +246,15 @@ func (h *handler) updateSink(c *echo.Context) error {
 		return notFound(c, "sink not found")
 	}
 	in := sinkIn{
-		Name:         cur.Name,
-		Type:         cur.Type,
-		URL:          cur.URL,
-		DB:           cur.DB,
-		Username:     cur.Username,
-		CredentialID: cur.CredentialID,
-		Enabled:      cur.Enabled,
+		Name:          cur.Name,
+		Type:          cur.Type,
+		URL:           cur.URL,
+		InfluxVersion: cur.InfluxVersion,
+		Org:           cur.Org,
+		DB:            cur.DB,
+		Username:      cur.Username,
+		CredentialID:  cur.CredentialID,
+		Enabled:       cur.Enabled,
 	}
 	if err := decode(c, &in); err != nil {
 		return badBody(c, err)
@@ -299,16 +305,18 @@ func (h *handler) resetTopology(c *echo.Context) error {
 
 func (in sinkIn) sink(id uint) store.Sink {
 	return store.Sink{
-		ID:           id,
-		Name:         in.Name,
-		Type:         in.Type,
-		URL:          in.URL,
-		DB:           in.DB,
-		Username:     in.Username,
-		Password:     in.Password,
-		Token:        in.Token,
-		CredentialID: in.CredentialID,
-		Enabled:      in.Enabled,
+		ID:            id,
+		Name:          in.Name,
+		Type:          in.Type,
+		URL:           in.URL,
+		InfluxVersion: in.InfluxVersion,
+		Org:           in.Org,
+		DB:            in.DB,
+		Username:      in.Username,
+		Password:      in.Password,
+		Token:         in.Token,
+		CredentialID:  in.CredentialID,
+		Enabled:       in.Enabled,
 	}
 }
 
@@ -326,16 +334,18 @@ func toSettingsOut(s store.Settings) settingsOut {
 
 func toSinkOut(s store.Sink) sinkOut {
 	return sinkOut{
-		ID:           s.ID,
-		Name:         s.Name,
-		Type:         s.Type,
-		URL:          s.URL,
-		DB:           s.DB,
-		Username:     s.Username,
-		PasswordSet:  s.Password != "",
-		TokenSet:     s.Token != "",
-		CredentialID: s.CredentialID,
-		Enabled:      s.Enabled,
+		ID:            s.ID,
+		Name:          s.Name,
+		Type:          s.Type,
+		URL:           s.URL,
+		InfluxVersion: s.InfluxVersion,
+		Org:           s.Org,
+		DB:            s.DB,
+		Username:      s.Username,
+		PasswordSet:   s.Password != "",
+		TokenSet:      s.Token != "",
+		CredentialID:  s.CredentialID,
+		Enabled:       s.Enabled,
 	}
 }
 

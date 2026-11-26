@@ -11,8 +11,8 @@ OpenStack 을 연동하는 관리 플랫폼과 GPU 모니터링 서버를 함께
   관리 플랫폼은 이를 실제 OpenStack 으로 보고 hypervisor, VM, flavor 를 동기화합니다.
 - **메트릭 쓰기** - 같은 토폴로지로 만든 GPU 메트릭과 시스템 메트릭을 두 종류의 sink 하나 이상에 주기적으로(기본
   10초마다) 씁니다.
-  - `influxdb`: telegraf 수집 에이전트가 쓰는 것과 같은 모양의 InfluxDB v1 line protocol
-    (`dcgm`, `gpu_vm_mapping`, cpu, mem, disk, net 등).
+  - `influxdb`: telegraf 수집 에이전트가 쓰는 것과 같은 모양의 InfluxDB line protocol
+    (`dcgm`, `gpu_vm_mapping`, cpu, mem, disk, net 등). InfluxDB v1, v2, v3 의 쓰기 API 로 보냅니다.
   - `otlp`: OpenTelemetry 기반 수집 에이전트가 보내는 것과 같은 모양의 OTLP/HTTP 메트릭
     (hostmetrics 의 `system.*`·`process.*`, `nvidia_smi.*`, `nvml.gpm.*`, `nvidia_kmsg.xid.errors`).
     VictoriaMetrics, Prometheus, OpenTelemetry Collector 로 보낼 수 있습니다.
@@ -225,7 +225,7 @@ hostmetrics receiver 와 NVIDIA GPU receiver(nvidia-smi, 커널 로그, NVML GPM
    관리 플랫폼이 동기화를 마치면 위 표의 hypervisor 와 VM 이 보여야 합니다.
 
 5. **Sink** 탭에서 sink 를 추가하고 켭니다.
-   - `influxdb`: 모니터링 서버가 읽는 InfluxDB. 4단계에서 관리 플랫폼이 돌려준 credential id 를 **Credential ID** 에
+   - `influxdb`: 모니터링 서버가 읽는 InfluxDB(v1, v2, v3). 4단계에서 관리 플랫폼이 돌려준 credential id 를 **Credential ID** 에
      넣습니다([InfluxDB sink](#influxdb-sink) 참고).
    - `otlp`: VictoriaMetrics, Prometheus 같은 OTLP/HTTP 엔드포인트([OTLP sink](#otlp-sink) 참고).
 
@@ -264,7 +264,7 @@ sink 를 다시 넣기 전까지는 메트릭을 쓰지 않습니다.
 | 이전 | 지금 |
 |------|------|
 | `advertise_host`, `openstack.password`, `openstack.token_ttl`, `interval`, `seed`, `xid_rate`, `dry_run` | 일반 탭 |
-| `sinks[]` | Sink 탭, 종류 `influxdb`. 비밀번호도 다시 입력합니다 |
+| `sinks[]` | Sink 탭, 종류 `influxdb`, 버전 v1. 비밀번호도 다시 입력합니다 |
 | `topology_file` | 토폴로지 탭의 JSON 보기: 파일 내용을 붙여 넣고 적용한 뒤 저장 |
 | `listen` | `-listen` 플래그 |
 | `EMU_*` 환경 변수 | 지원하지 않습니다. 설정 화면에서 넣습니다 |
@@ -344,16 +344,36 @@ sink 하나가 목적지 하나입니다. 켜진 sink 는 수집할 때마다 �
 | 이름 (`name`) | 겹치면 안 됩니다. 로그와 상태 탭에 쓰입니다 |
 | 종류 (`type`) | `influxdb` 또는 `otlp` |
 | URL (`url`) | 호스트가 있는 `http://` 또는 `https://`. `user:password@` 를 넣으면 안 되고 사용자 이름·비밀번호 칸을 씁니다 |
-| 사용자 이름, 비밀번호 (`username`, `password`) | HTTP Basic 인증. 둘 다 비어 있으면 인증 없이 씁니다 |
+| 사용자 이름, 비밀번호 (`username`, `password`) | `influxdb` v1 과 `otlp` sink 의 HTTP Basic 인증. 둘 다 비어 있으면 인증 없이 씁니다. `influxdb` v2·v3 sink 는 쓰지 않습니다 |
+| API 토큰, Bearer 토큰 (`token`) | `influxdb` v2·v3 sink 의 API 토큰, 또는 `otlp` sink 의 Bearer 토큰 |
 | 켜기 (`enabled`) | 켜진 sink 에만 쓰고 그때만 모든 칸을 검사하므로, 꺼진 sink 는 덜 채운 채로 두어도 됩니다 |
 
 비밀번호와 토큰은 DB 파일(권한 0600)에 평문으로 저장하고 API 로 내보내지 않습니다.
 수정할 때 칸을 비워 두면 저장된 값을 그대로 씁니다. **URL 을 바꾸면 저장된 비밀번호와 토큰을 지웁니다.**
 같은 저장에서 새 값을 넣으면 그 값을 씁니다. 옛 계정을 가진 채로 sink 를 다른 서버로 돌릴 수 없게 하려는 것입니다.
+종류나 InfluxDB 버전을 바꾸면 새 방식이 쓰지 않는 저장 비밀값을 지웁니다. `influxdb` sink 를 v1 에서 v2·v3 로 바꾸면
+사용자 이름과 비밀번호를, v2·v3 에서 v1 로 바꾸면 토큰을 지웁니다.
 
 ### InfluxDB sink
 
-`influxdb` sink 하나가 InfluxDB v1 데이터베이스 하나입니다. 화면에서는 종류를 InfluxDB v1 로 고릅니다. API 로는 이렇습니다.
+`influxdb` sink 하나가 InfluxDB 데이터베이스(v1, v3) 또는 버킷(v2) 하나입니다. `influx_version` 으로 쓰기 API 를
+고릅니다: `v1`(빼면 기본값), `v2`, `v3`. 화면에서는 종류를 **InfluxDB (line protocol)** 로 고른 뒤
+**InfluxDB 버전** 을 고르고, 버전에 따라 입력 칸이 바뀝니다.
+
+| InfluxDB 버전 (`influx_version`) | 요청 | 인증 | 켜려면 필요한 것 |
+|----------------------------------|------|------|------------------|
+| `v1` (기본) | `POST <url>/write?db=<db>&precision=ns` | 사용자 이름·비밀번호로 HTTP Basic, 둘 다 비면 인증 없음 | `url`, `db`, `credential_id` |
+| `v2` | `POST <url>/api/v2/write?org=<org>&bucket=<db>&precision=ns` | `Authorization: Token <token>` | `url`, `org`, `db`(버킷), `token`, `credential_id` |
+| `v3` | `POST <url>/api/v3/write_lp?db=<db>&precision=nanosecond` | `Authorization: Bearer <token>`, 토큰이 비면 헤더 없음 | `url`, `db`(데이터베이스), `credential_id` |
+
+모든 버전에 쓰는 항목입니다.
+
+| 항목 (API 키) | 어디서 가져오나 |
+|---------------|-----------------|
+| URL (`url`) | 모니터링 서버가 읽는 InfluxDB, 즉 실제 수집 에이전트가 쓰는 곳. `http://` 또는 `https://` 와 포트(기본은 v1·v2 가 8086, v3 가 8181) |
+| Credential ID (`credential_id`) | [빠른 시작](#빠른-시작) 4단계에서 등록한 OpenStack credential 에 관리 플랫폼이 붙인 id. UUID 이고 켜려면 필요합니다. `credential_id` 태그 값과 `uuid` 태그의 접두사가 됩니다 |
+
+#### InfluxDB v1
 
 ```sh
 curl -s -X POST http://localhost:15080/api/v1/sinks \
@@ -365,17 +385,59 @@ curl -s -X POST http://localhost:15080/api/v1/sinks \
 
 | 항목 (API 키) | 어디서 가져오나 |
 |---------------|-----------------|
-| URL (`url`) | 모니터링 서버가 읽는 InfluxDB, 즉 실제 수집 에이전트가 쓰는 곳. `http://` 또는 `https://`, 기본 포트 8086 |
 | 데이터베이스 (`db`) | 그 에이전트가 쓰는 데이터베이스 (telegraf 라면 `[[outputs.influxdb]]` 의 `database`). 켜려면 필요합니다 |
 | 사용자 이름, 비밀번호 | 그 데이터베이스에 쓸 수 있는 계정. 에이전트 계정(telegraf 의 `username`, `password`)을 쓰면 됩니다. 인증이 꺼져 있으면 둘 다 비웁니다 |
-| Credential ID (`credential_id`) | [빠른 시작](#빠른-시작) 4단계에서 등록한 OpenStack credential 에 관리 플랫폼이 붙인 id. UUID 이고 켜려면 필요합니다. `credential_id` 태그 값과 `uuid` 태그의 접두사가 됩니다 |
 
-쓰는 방식입니다.
+#### InfluxDB v2
 
-- `interval` 마다 켜진 sink 하나에 한 묶음씩 `POST <url>/write?db=<db>&precision=ns` 로 보냅니다. gzip 으로 압축하고, 요청 하나에 최대 5000줄입니다.
-- 사용자 이름이나 비밀번호가 있으면 HTTP Basic 인증을 씁니다.
-- 데이터베이스를 만들지 않습니다. 미리 있어야 하고, 계정에 쓰기 권한이 있어야 합니다.
-- 네트워크 에러나 5xx 는 1초 뒤 한 번 더 보냅니다. 400(필드 타입 충돌 등)은 기록하고 나머지 요청은 계속 보냅니다.
+```sh
+curl -s -X POST http://localhost:15080/api/v1/sinks \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "site-a", "type": "influxdb", "influx_version": "v2", "url": "http://192.0.2.30:8086",
+       "org": "<influxdb-org>", "db": "telegraf", "token": "<change-me>",
+       "credential_id": "3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07", "enabled": true}'
+```
+
+| 항목 (API 키) | 어디서 가져오나 |
+|---------------|-----------------|
+| 조직(Organization) (`org`) | 그 버킷이 속한 조직 이름 (telegraf 라면 `[[outputs.influxdb_v2]]` 의 `organization`). 켜려면 필요합니다 |
+| 버킷 (`db`) | 그 에이전트가 쓰는 버킷 (telegraf 라면 `[[outputs.influxdb_v2]]` 의 `bucket`). 켜려면 필요합니다 |
+| API 토큰 (`token`) | 그 버킷에 쓰기 권한이 있는 토큰 (telegraf 라면 `[[outputs.influxdb_v2]]` 의 `token`). 켜려면 필요합니다 |
+
+InfluxDB 화면에서는 버킷이 **Load Data > Buckets** 에 있고 토큰은 **Load Data > API Tokens** 에서 만듭니다.
+`influx` CLI 로는 `influx org list`, `influx bucket list --org <org>` 로 보고,
+`influx auth create --org <org> --write-bucket <bucket-id>` 로 그 버킷에만 쓸 수 있는 토큰을 만듭니다.
+
+InfluxDB 2 는 DBRP 매핑을 거쳐 v1 경로 `/write` 로도 쓰기를 받습니다. 이 sink 는 그 경로를 쓰지 않으며,
+그 경로로 쓰려면 `v1` 을 고릅니다.
+
+#### InfluxDB v3
+
+```sh
+curl -s -X POST http://localhost:15080/api/v1/sinks \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "site-a", "type": "influxdb", "influx_version": "v3", "url": "http://192.0.2.30:8181",
+       "db": "telegraf", "token": "<change-me>",
+       "credential_id": "3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07", "enabled": true}'
+```
+
+| 항목 (API 키) | 어디서 가져오나 |
+|---------------|-----------------|
+| 데이터베이스 (`db`) | 모니터링 서버가 읽는 데이터베이스. `influxdb3 create database <db>` 로 만듭니다. 켜려면 필요합니다 |
+| API 토큰 (`token`) | 선택입니다. 그 데이터베이스에 쓸 수 있는 토큰. `influxdb3 create token --admin` 이 만들어 출력합니다. 서버를 `--without-auth` 로 띄웠으면 비웁니다 |
+
+InfluxDB 3 은 표 하나에 이름마다 칸을 하나만 두므로, 같은 measurement 에서 field 로 쓰이는 이름을 tag 로 받지 않습니다.
+실제 수집 에이전트는 그런 행을 씁니다(`dcgm` 의 `pstate` 는 tag 이면서 field). 그래서 `v3` sink 로 보낼 때만, 그 쓰기 안에서
+같은 measurement 가 field 로 쓰는 이름의 tag 를 빼고 field 는 남깁니다. `v1`·`v2` sink 에는 그대로 보냅니다.
+
+#### 쓰는 방식
+
+세 버전 모두 같습니다.
+
+- `interval` 마다 켜진 sink 하나에 한 묶음씩 그 버전의 요청으로 보냅니다. gzip 으로 압축하고, 요청 하나에 최대 5000줄입니다.
+- 쓰는 줄은 버전과 관계없이 같습니다: [InfluxDB 지표](#influxdb-지표)(`dcgm`, `gpu_vm_mapping`, telegraf 지표). 위에서 말한 v3 에서 빼는 tag 만 다릅니다.
+- 데이터베이스나 버킷을 만들지 않습니다. 미리 있어야 하고, 계정이나 토큰에 쓰기 권한이 있어야 합니다.
+- InfluxDB 는 쓰기에 성공하면 204 로 답합니다. 네트워크 에러나 5xx 는 1초 뒤 한 번 더 보냅니다. 400 과 422(필드 타입 충돌 등. InfluxDB v2 는 422 로 답합니다)는 기록하고 나머지 요청은 계속 보냅니다.
 - 성공한 묶음마다 로그에 `msg="sink write" sink=site-a type=influxdb lines=...` 가, 실패하면 에러와 함께 `msg="sink write failed"` 가 남습니다. 마지막 에러는 상태 탭에도 나옵니다.
 
 ### OTLP sink

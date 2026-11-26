@@ -1,6 +1,6 @@
 // give-me-real-gpu is an emulator that fills GPU monitoring screens without GPU servers.
 // It serves a fake OpenStack API and periodically writes GPU and system metrics built from the same topology
-// to InfluxDB v1 or to an OTLP/HTTP endpoint. Settings, sinks and the topology are kept in a sqlite file
+// to InfluxDB (v1, v2 or v3) or to an OTLP/HTTP endpoint. Settings, sinks and the topology are kept in a sqlite file
 // and edited in the web settings UI; saved changes apply without a restart.
 package main
 
@@ -389,9 +389,12 @@ func newJob(sk store.Sink, topo *topology.Topology, s store.Settings) (runtime.J
 			sink: &influx.Sink{
 				Name:     sk.Name,
 				URL:      sk.URL,
+				Version:  sk.InfluxVersion,
+				Org:      sk.Org,
 				DB:       sk.DB,
 				Username: sk.Username,
 				Password: sk.Password,
+				Token:    sk.Token,
 				Client:   client,
 			},
 		}, nil

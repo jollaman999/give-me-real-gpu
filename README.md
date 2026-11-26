@@ -11,8 +11,8 @@ run this single program instead of real GPU nodes and collection agents. It emul
   The management platform treats it as a real OpenStack and syncs hypervisors, VMs and flavors from it.
 - **Metric writes** - GPU and system metrics built from the same topology are written periodically (default every
   10 seconds) to one or more sinks of two kinds.
-  - `influxdb`: InfluxDB v1 line protocol shaped like what a telegraf collection agent writes
-    (`dcgm`, `gpu_vm_mapping`, cpu, mem, disk, net, ...).
+  - `influxdb`: InfluxDB line protocol shaped like what a telegraf collection agent writes
+    (`dcgm`, `gpu_vm_mapping`, cpu, mem, disk, net, ...), through the write API of InfluxDB v1, v2 or v3.
   - `otlp`: OTLP/HTTP metrics shaped like what an OpenTelemetry-based collection agent sends
     (hostmetrics `system.*` and `process.*`, `nvidia_smi.*`, `nvml.gpm.*`, `nvidia_kmsg.xid.errors`), for
     VictoriaMetrics, Prometheus or an OpenTelemetry Collector.
@@ -227,7 +227,7 @@ Values are seeded random walks as well (each sink uses `seed + its sink id`), an
    Once the management platform syncs, the hypervisors and VMs in the table above should appear.
 
 5. In **Sinks**, add a sink and enable it.
-   - `influxdb` for the InfluxDB the monitoring server reads. Put the credential id the management platform returned
+   - `influxdb` for the InfluxDB (v1, v2 or v3) the monitoring server reads. Put the credential id the management platform returned
      in step 4 into **Credential ID** (see [InfluxDB sinks](#influxdb-sinks)).
    - `otlp` for an OTLP/HTTP endpoint such as VictoriaMetrics or Prometheus (see [OTLP sinks](#otlp-sinks)).
 
@@ -266,7 +266,7 @@ Metrics are not written until the sinks are entered again.
 | Before | Now |
 |--------|-----|
 | `advertise_host`, `openstack.password`, `openstack.token_ttl`, `interval`, `seed`, `xid_rate`, `dry_run` | General |
-| `sinks[]` | Sinks, type `influxdb`. Type the passwords again |
+| `sinks[]` | Sinks, type `influxdb`, version v1. Type the passwords again |
 | `topology_file` | Topology, JSON view: paste the file, Apply, Save |
 | `listen` | The `-listen` flag |
 | `EMU_*` environment variables | Not supported. Enter the values in the settings UI |
@@ -346,16 +346,36 @@ A sink is one destination. Every enabled sink receives every collection.
 | Name (`name`) | Unique. Used in logs and in Status |
 | Type (`type`) | `influxdb` or `otlp` |
 | URL (`url`) | `http://` or `https://` with a host. It must not contain `user:password@`; use Username and Password |
-| Username, Password (`username`, `password`) | HTTP Basic authentication. When both are empty, writes are sent without authentication |
+| Username, Password (`username`, `password`) | HTTP Basic authentication for `influxdb` v1 and `otlp` sinks. When both are empty, writes are sent without authentication. `influxdb` v2 and v3 sinks ignore them |
+| API token, Bearer token (`token`) | API token of an `influxdb` v2 or v3 sink, or Bearer token of an `otlp` sink |
 | Enabled (`enabled`) | Only enabled sinks are written to and fully checked, so a disabled sink can be left half filled in |
 
 Passwords and tokens are stored as plain text in the database file (mode 0600) and are never sent back by the API.
 Leave the field empty when editing to keep the stored value. **Changing the URL clears the stored password and token**
 unless you enter new ones in the same save, so a sink cannot be pointed at another server with the old credentials.
+Changing the type or the InfluxDB version clears the stored secrets the new kind does not use: username and password when
+an `influxdb` sink moves from v1 to v2 or v3, the token when it moves from v2 or v3 to v1.
 
 ### InfluxDB sinks
 
-An `influxdb` sink is one InfluxDB v1 database. In the UI pick InfluxDB v1 as the type. With the API:
+An `influxdb` sink is one InfluxDB database (v1, v3) or bucket (v2). `influx_version` picks the write API: `v1`
+(the default when left out), `v2` or `v3`. In the UI pick **InfluxDB (line protocol)** as the type and then the **InfluxDB version**; the fields
+change with the version.
+
+| InfluxDB version (`influx_version`) | Request | Authentication | Required when enabled |
+|-------------------------------------|---------|----------------|-----------------------|
+| `v1` (default) | `POST <url>/write?db=<db>&precision=ns` | HTTP Basic with the username and password, none when both are empty | `url`, `db`, `credential_id` |
+| `v2` | `POST <url>/api/v2/write?org=<org>&bucket=<db>&precision=ns` | `Authorization: Token <token>` | `url`, `org`, `db` (the bucket), `token`, `credential_id` |
+| `v3` | `POST <url>/api/v3/write_lp?db=<db>&precision=nanosecond` | `Authorization: Bearer <token>`, no header when the token is empty | `url`, `db` (the database), `credential_id` |
+
+Fields of every version:
+
+| Field (API key) | Where the value comes from |
+|-----------------|----------------------------|
+| URL (`url`) | The InfluxDB the monitoring server reads, where the real collection agents write. `http://` or `https://`, with the port (8086 for v1 and v2, 8181 for v3 by default) |
+| Credential ID (`credential_id`) | The id the management platform gives the OpenStack credential you registered in [Quick start](#quick-start) step 4. A UUID, required when enabled. Becomes the `credential_id` tag and the prefix of the `uuid` tag |
+
+#### InfluxDB v1
 
 ```sh
 curl -s -X POST http://localhost:15080/api/v1/sinks \
@@ -367,17 +387,59 @@ curl -s -X POST http://localhost:15080/api/v1/sinks \
 
 | Field (API key) | Where the value comes from |
 |-----------------|----------------------------|
-| URL (`url`) | The InfluxDB the monitoring server reads, where the real collection agents write. `http://` or `https://`, port 8086 by default |
 | Database (`db`) | The database those agents write to (with telegraf, `database` in `[[outputs.influxdb]]`). Required when enabled |
 | Username, Password | An account that can write to the database, such as the agents' account (telegraf `username` and `password`). Leave both empty when authentication is disabled |
-| Credential ID (`credential_id`) | The id the management platform gives the OpenStack credential you registered in [Quick start](#quick-start) step 4. A UUID, required when enabled. Becomes the `credential_id` tag and the prefix of the `uuid` tag |
 
-How the emulator writes:
+#### InfluxDB v2
 
-- Every `interval` it sends one batch per enabled sink as `POST <url>/write?db=<db>&precision=ns`, gzip-compressed, up to 5000 lines per request.
-- When the username or password is set it uses HTTP Basic authentication.
-- It does not create the database. It must already exist and the account needs write permission on it.
-- A network error or 5xx is retried once after 1 second. A 400 (for example a field type conflict) is recorded and the remaining requests are still sent.
+```sh
+curl -s -X POST http://localhost:15080/api/v1/sinks \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "site-a", "type": "influxdb", "influx_version": "v2", "url": "http://192.0.2.30:8086",
+       "org": "<influxdb-org>", "db": "telegraf", "token": "<change-me>",
+       "credential_id": "3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07", "enabled": true}'
+```
+
+| Field (API key) | Where the value comes from |
+|-----------------|----------------------------|
+| Organization (`org`) | The organization name of the bucket (with telegraf, `organization` in `[[outputs.influxdb_v2]]`). Required when enabled |
+| Bucket (`db`) | The bucket those agents write to (with telegraf, `bucket` in `[[outputs.influxdb_v2]]`). Required when enabled |
+| API token (`token`) | A token with write permission on the bucket (with telegraf, `token` in `[[outputs.influxdb_v2]]`). Required when enabled |
+
+In the InfluxDB UI, buckets are under **Load Data > Buckets** and tokens are made under **Load Data > API Tokens**.
+With the `influx` CLI, `influx org list` and `influx bucket list --org <org>` show them, and
+`influx auth create --org <org> --write-bucket <bucket-id>` makes a token that can only write to that bucket.
+
+InfluxDB 2 also accepts writes on the v1 path `/write` through DBRP mappings. This sink does not use that path; to write
+through it, pick `v1`.
+
+#### InfluxDB v3
+
+```sh
+curl -s -X POST http://localhost:15080/api/v1/sinks \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "site-a", "type": "influxdb", "influx_version": "v3", "url": "http://192.0.2.30:8181",
+       "db": "telegraf", "token": "<change-me>",
+       "credential_id": "3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07", "enabled": true}'
+```
+
+| Field (API key) | Where the value comes from |
+|-----------------|----------------------------|
+| Database (`db`) | The database the monitoring server reads. `influxdb3 create database <db>` creates one. Required when enabled |
+| API token (`token`) | Optional. A token that can write to the database. `influxdb3 create token --admin` prints one. Leave it empty when the server runs with `--without-auth` |
+
+InfluxDB 3 keeps one column per name in a table, so it rejects a tag whose name is used as a field in the same measurement.
+The real collection agent writes such rows (`pstate` in `dcgm` is both a tag and a field). For `v3` sinks only, the emulator
+drops a tag when the same measurement in that write uses its name as a field, and keeps the field. `v1` and `v2` sinks get the rows as they are.
+
+#### How the emulator writes
+
+The same for every version:
+
+- Every `interval` it sends one batch per enabled sink to the request of its version, gzip-compressed, up to 5000 lines per request.
+- The rows are the same for every version: the [InfluxDB metrics](#influxdb-metrics) (`dcgm`, `gpu_vm_mapping` and the telegraf metrics), except the tags dropped for v3 above.
+- It does not create the database or bucket. It must already exist and the account or token needs write permission on it.
+- InfluxDB answers 204 to a successful write. A network error or 5xx is retried once after 1 second. A 400 or 422 (for example a field type conflict, which InfluxDB v2 answers with 422) is recorded and the remaining requests are still sent.
 - The log shows `msg="sink write" sink=site-a type=influxdb lines=...` for each successful batch and `msg="sink write failed"` with the error otherwise. Status shows the last error too.
 
 ### OTLP sinks

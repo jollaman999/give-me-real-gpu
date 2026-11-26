@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jollaman999/give-me-real-gpu/internal/influx"
 	"github.com/jollaman999/give-me-real-gpu/internal/store"
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
 )
@@ -183,6 +184,8 @@ func TestSinkKey(t *testing.T) {
 		"password": func() string { c := sk; c.Password = "<change-me-2>"; return sinkKey(c, topo, s) },
 		"token":    func() string { c := sk; c.Token = "tok"; return sinkKey(c, topo, s) },
 		"url":      func() string { c := sk; c.URL = "http://192.0.2.21:8086"; return sinkKey(c, topo, s) },
+		"version":  func() string { c := sk; c.InfluxVersion = store.InfluxV2; return sinkKey(c, topo, s) },
+		"org":      func() string { c := sk; c.Org = "o"; return sinkKey(c, topo, s) },
 		"cred": func() string {
 			c := sk
 			c.CredentialID = "1b3e6a52-7f1d-4c2a-9e8b-1a2b3c4d5e6f"
@@ -253,5 +256,18 @@ func TestRunOnce(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "site-off") {
 		t.Error("disabled sink printed")
+	}
+}
+
+func TestNewJobPassesInfluxVersion(t *testing.T) {
+	sk := store.Sink{ID: 1, Name: "site-a", Type: store.SinkInfluxDB, URL: "http://192.0.2.20:8086", InfluxVersion: store.InfluxV2,
+		Org: "o", DB: "bucket-a", Token: "<change-me>", CredentialID: credID, Enabled: true}
+	j, err := newJob(sk, topology.Default(), store.DefaultSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := j.(*influxJob).sink
+	if got.Version != influx.V2 || got.Org != "o" || got.DB != "bucket-a" || got.Token != "<change-me>" {
+		t.Errorf("influx sink %+v", got)
 	}
 }

@@ -9,6 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
 )
 
@@ -282,6 +286,15 @@ func TestSinkValidation(t *testing.T) {
 			[]string{"is not a UUID"}},
 		{"enabled otlp with influx fields", Sink{Name: "a", Type: SinkOTLP, URL: "http://192.0.2.1:4318/v1/metrics", DB: "d", CredentialID: credID, Enabled: true},
 			[]string{"db is only used", "credential_id is only used"}},
+		{"enabled otlp with influx version and org", Sink{Name: "a", Type: SinkOTLP, URL: "http://192.0.2.1:4318/v1/metrics", InfluxVersion: InfluxV2, Org: "o", Enabled: true},
+			[]string{"influx_version is only used", "org is only used"}},
+		{"unknown influx version", Sink{Name: "a", Type: SinkInfluxDB, InfluxVersion: "v4"}, []string{`influx_version "v4" must be`}},
+		{"enabled influx v2 missing org, bucket, token and cred", Sink{Name: "a", Type: SinkInfluxDB, InfluxVersion: InfluxV2, URL: "http://192.0.2.1:8086", Enabled: true},
+			[]string{"org is empty", "the bucket for InfluxDB v2", "token is empty", "credential_id is empty"}},
+		{"enabled influx v3 missing db and cred", Sink{Name: "a", Type: SinkInfluxDB, InfluxVersion: InfluxV3, URL: "http://192.0.2.1:8181", Enabled: true},
+			[]string{"db is empty", "credential_id is empty"}},
+		{"enabled influx v3 without url", Sink{Name: "a", Type: SinkInfluxDB, InfluxVersion: InfluxV3, DB: "d", CredentialID: credID, Enabled: true},
+			[]string{"url is empty"}},
 	}
 	for _, tc := range cases {
 		p := ValidateSink(tc.sink, nil)
@@ -303,6 +316,12 @@ func TestSinkValidation(t *testing.T) {
 		{Name: "b", Type: SinkOTLP, URL: "https://192.0.2.1:8429/opentelemetry/v1/metrics", Token: "<change-me>", Enabled: true},
 		{Name: "c", Type: SinkInfluxDB},
 		{Name: "d", Type: SinkOTLP, DB: "left-over", CredentialID: "x"},
+		{Name: "e", Type: SinkInfluxDB, InfluxVersion: InfluxV2, URL: "http://192.0.2.1:8086", Org: "o", DB: "bucket", Token: "<change-me>", CredentialID: credID, Enabled: true},
+		{Name: "f", Type: SinkInfluxDB, InfluxVersion: InfluxV3, URL: "http://192.0.2.1:8181", DB: "d", CredentialID: credID, Enabled: true},
+		{Name: "g", Type: SinkInfluxDB, InfluxVersion: InfluxV3, URL: "http://192.0.2.1:8181", DB: "d", Token: "<change-me>", CredentialID: credID, Enabled: true},
+		{Name: "h", Type: SinkInfluxDB, InfluxVersion: InfluxV2, URL: "http://192.0.2.1:8086", Org: "o", DB: "bucket", Token: "<change-me>",
+			Username: "left-over", Password: "<change-me>", CredentialID: credID, Enabled: true},
+		{Name: "i", Type: SinkInfluxDB, InfluxVersion: InfluxV2},
 	}
 	for _, sk := range good {
 		if p := ValidateSink(sk, nil); len(p) != 0 {
@@ -444,6 +463,68 @@ func TestUpdateSinkSecrets(t *testing.T) {
 	}
 }
 
+func TestUpdateSinkModeChangeDropsUnusedSecrets(t *testing.T) {
+	s, _ := openTemp(t)
+	a, err := s.CreateSink(influxSink("site-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// v1 -> v2 on the same URL: the password and the username are dropped, the new token is used.
+	u := a
+	u.InfluxVersion, u.Org, u.Password, u.Token = InfluxV2, "o", "", "<tok>"
+	got, err := s.UpdateSink(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Password != "" || got.Username != "" || got.Token != "<tok>" {
+		t.Errorf("v1 -> v2: %+v", got)
+	}
+
+	// Same version again with empty secrets: the token stays.
+	u = got
+	u.Token = ""
+	if got, err = s.UpdateSink(u); err != nil || got.Token != "<tok>" {
+		t.Errorf("v2 -> v2: %v %+v", err, got)
+	}
+
+	// v2 -> v3 keeps the token, since v3 sends it too.
+	u = got
+	u.InfluxVersion, u.Token = InfluxV3, ""
+	if got, err = s.UpdateSink(u); err != nil || got.Token != "<tok>" {
+		t.Errorf("v2 -> v3: %v %+v", err, got)
+	}
+
+	// v3 -> v1: the token is dropped, the new password is used.
+	u = got
+	u.InfluxVersion, u.Org, u.Token, u.Username, u.Password = InfluxV1, "", "", "writer", "<new>"
+	if got, err = s.UpdateSink(u); err != nil || got.Token != "" || got.Password != "<new>" || got.Username != "writer" {
+		t.Errorf("v3 -> v1: %v %+v", err, got)
+	}
+
+	// v1 -> v2 with a new username and password sent along: they are used as sent.
+	u = got
+	u.InfluxVersion, u.Org, u.Token, u.Username, u.Password = InfluxV2, "o", "<tok2>", "other", "<sent>"
+	if got, err = s.UpdateSink(u); err != nil || got.Password != "<sent>" || got.Username != "other" {
+		t.Errorf("v1 -> v2 with new values: %v %+v", err, got)
+	}
+
+	// influxdb v1 -> otlp keeps both, since otlp sends both.
+	b, err := s.CreateSink(Sink{Name: "site-b", Type: SinkInfluxDB, InfluxVersion: InfluxV1, URL: "http://192.0.2.30:4318",
+		Username: "u", Password: "<pw>", Token: "<t>"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Type, b.InfluxVersion, b.Password, b.Token = SinkOTLP, "", "", ""
+	if got, err = s.UpdateSink(b); err != nil || got.Password != "<pw>" || got.Token != "<t>" || got.Username != "u" {
+		t.Errorf("influxdb v1 -> otlp: %v %+v", err, got)
+	}
+	snap, _ := s.Snapshot()
+	if snap.Sinks[0].Password != "<sent>" || snap.Sinks[1].Token != "<t>" {
+		t.Errorf("stored %+v", snap.Sinks)
+	}
+}
+
 func TestChangesSignal(t *testing.T) {
 	s, _ := openTemp(t)
 	drain(s)
@@ -527,5 +608,110 @@ func TestTopologyValidation(t *testing.T) {
 	snap, _ = s.Snapshot()
 	if !reflect.DeepEqual(snap.Topology, topology.Default()) {
 		t.Error("ResetTopology did not restore topology.Default()")
+	}
+}
+
+func TestInfluxVersionStored(t *testing.T) {
+	s, _ := openTemp(t)
+	a, err := s.CreateSink(influxSink("site-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.InfluxVersion != InfluxV1 {
+		t.Errorf("influxdb sink without a version stored as %q, want v1", a.InfluxVersion)
+	}
+	var raw string
+	if err := s.db.Raw("SELECT influx_version FROM sinks WHERE id = ?", a.ID).Scan(&raw).Error; err != nil {
+		t.Fatal(err)
+	}
+	if raw != InfluxV1 {
+		t.Errorf("influx_version column %q, want v1", raw)
+	}
+
+	b, err := s.CreateSink(Sink{Name: "site-b", Type: SinkOTLP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.InfluxVersion != "" {
+		t.Errorf("otlp sink got influx_version %q", b.InfluxVersion)
+	}
+
+	a.InfluxVersion, a.Org, a.Token = InfluxV2, "o", "<change-me>"
+	got, err := s.UpdateSink(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.InfluxVersion != InfluxV2 || got.Org != "o" {
+		t.Errorf("updated to v2: %+v", got)
+	}
+	a.InfluxVersion = ""
+	if got, err = s.UpdateSink(a); err != nil || got.InfluxVersion != InfluxV1 {
+		t.Errorf("update with an empty version: %v %q, want v1", err, got.InfluxVersion)
+	}
+	a.InfluxVersion = "v9"
+	if _, err := s.UpdateSink(a); !hasProblem(problemsOf(t, err), "influx_version") {
+		t.Errorf("unknown version was not rejected")
+	}
+}
+
+// oldSinkRow is the sinks table before influx_version and org were added.
+type oldSinkRow struct {
+	ID           uint   `gorm:"primaryKey"`
+	Name         string `gorm:"not null;uniqueIndex"`
+	Type         string `gorm:"not null"`
+	URL          string
+	DB           string
+	Username     string
+	Password     string
+	Token        string
+	CredentialID string
+	Enabled      bool
+}
+
+func (oldSinkRow) TableName() string { return "sinks" }
+
+func TestOpenOldSchemaReadsV1(t *testing.T) {
+	dir := t.TempDir()
+	old, err := gorm.Open(sqlite.Open(filepath.Join(dir, FileName)), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.AutoMigrate(&oldSinkRow{}); err != nil {
+		t.Fatal(err)
+	}
+	row := oldSinkRow{Name: "site-a", Type: string(SinkInfluxDB), URL: "http://192.0.2.10:8086", DB: "telegraf",
+		Username: "writer", Password: "<change-me>", CredentialID: credID, Enabled: true}
+	if err := old.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Create(&oldSinkRow{Name: "site-b", Type: string(SinkOTLP), URL: "http://192.0.2.20:4318/v1/metrics"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, _ := old.DB()
+	sqlDB.Close()
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open old schema: %v", err)
+	}
+	defer s.Close()
+	snap, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Sinks) != 2 {
+		t.Fatalf("sinks %+v", snap.Sinks)
+	}
+	want := Sink{ID: row.ID, Name: "site-a", Type: SinkInfluxDB, URL: "http://192.0.2.10:8086", InfluxVersion: InfluxV1,
+		DB: "telegraf", Username: "writer", Password: "<change-me>", CredentialID: credID, Enabled: true}
+	if snap.Sinks[0] != want {
+		t.Errorf("old influxdb row read as %+v, want %+v", snap.Sinks[0], want)
+	}
+	if snap.Sinks[1].InfluxVersion != "" || snap.Sinks[1].Org != "" {
+		t.Errorf("old otlp row read as %+v", snap.Sinks[1])
+	}
+	got, err := s.UpdateSink(snap.Sinks[0])
+	if err != nil || got != want {
+		t.Errorf("saving the old row again: %v %+v", err, got)
 	}
 }

@@ -167,7 +167,8 @@ func TestSinks(t *testing.T) {
 	}
 	var a map[string]any
 	decodeJSON(t, body, &a)
-	if a["password_set"] != true || a["token_set"] != false || a["name"] != "site-a" || a["id"] == float64(0) {
+	if a["password_set"] != true || a["token_set"] != false || a["name"] != "site-a" || a["id"] == float64(0) ||
+		a["influx_version"] != "v1" || a["org"] != "" {
 		t.Errorf("created %v", a)
 	}
 	if _, ok := a["password"]; ok {
@@ -226,6 +227,56 @@ func TestSinks(t *testing.T) {
 	}
 	code, body = do(t, e, http.MethodDelete, path, "")
 	wantError(t, code, body, http.StatusNotFound, "sink not found", "")
+}
+
+func TestSinksInfluxVersions(t *testing.T) {
+	e, st := newServer(t, nil)
+
+	code, body := do(t, e, http.MethodPost, "/api/v1/sinks", `{"name":"site-a","type":"influxdb","influx_version":"v2",
+		"url":"http://192.0.2.10:8086","org":"my-org","db":"bucket-a","token":"`+sinkToken+`","credential_id":"`+credID+`","enabled":true}`)
+	if code != http.StatusCreated {
+		t.Fatalf("POST v2 sink %d %s", code, body)
+	}
+	if strings.Contains(body, sinkToken) {
+		t.Error("response repeats the token")
+	}
+	var a map[string]any
+	decodeJSON(t, body, &a)
+	if a["influx_version"] != "v2" || a["org"] != "my-org" || a["db"] != "bucket-a" || a["token_set"] != true {
+		t.Errorf("created v2 %v", a)
+	}
+	path := "/api/v1/sinks/" + strconv.Itoa(int(a["id"].(float64)))
+
+	code, body = do(t, e, http.MethodPost, "/api/v1/sinks", `{"name":"site-b","type":"influxdb","influx_version":"v2",
+		"url":"http://192.0.2.10:8086","db":"bucket-a","credential_id":"`+credID+`","enabled":true}`)
+	wantError(t, code, body, http.StatusBadRequest, "validation failed", "org is empty")
+
+	code, body = do(t, e, http.MethodPost, "/api/v1/sinks", `{"name":"site-b","type":"influxdb","influx_version":"v3",
+		"url":"http://192.0.2.11:8181","db":"db3","credential_id":"`+credID+`","enabled":true}`)
+	if code != http.StatusCreated {
+		t.Fatalf("POST v3 sink without token %d %s", code, body)
+	}
+	decodeJSON(t, body, &a)
+	if a["influx_version"] != "v3" || a["token_set"] != false {
+		t.Errorf("created v3 %v", a)
+	}
+
+	// Switching to v3 on the same URL keeps the token; a partial body keeps org.
+	code, body = do(t, e, http.MethodPut, path, `{"influx_version":"v3"}`)
+	if code != http.StatusOK {
+		t.Fatalf("PUT v3 %d %s", code, body)
+	}
+	decodeJSON(t, body, &a)
+	if a["influx_version"] != "v3" || a["token_set"] != true || a["org"] != "my-org" {
+		t.Errorf("after switching to v3 %v", a)
+	}
+	code, body = do(t, e, http.MethodPut, path, `{"influx_version":"v5"}`)
+	wantError(t, code, body, http.StatusBadRequest, "validation failed", "influx_version")
+
+	snap, _ := st.Snapshot()
+	if snap.Sinks[0].InfluxVersion != "v3" || snap.Sinks[0].Token != sinkToken || snap.Sinks[1].InfluxVersion != "v3" {
+		t.Errorf("stored %+v", snap.Sinks)
+	}
 }
 
 func TestTopology(t *testing.T) {

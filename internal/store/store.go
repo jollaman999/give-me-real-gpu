@@ -54,18 +54,27 @@ const (
 	SinkOTLP     SinkType = "otlp"
 )
 
+// InfluxDB versions an influxdb sink can write to. They differ in the write endpoint and the authentication.
+const (
+	InfluxV1 = "v1" // POST /write, Basic auth
+	InfluxV2 = "v2" // POST /api/v2/write, Token auth, org and bucket
+	InfluxV3 = "v3" // POST /api/v3/write_lp, Bearer auth (optional)
+)
+
 // Sink is one destination to write metrics to.
 type Sink struct {
-	ID           uint
-	Name         string   // unique, not empty
-	Type         SinkType // influxdb or otlp
-	URL          string   // influxdb: http(s)://host:port, otlp: the full endpoint URL
-	DB           string   // influxdb only
-	Username     string   // Basic auth. No auth when both username and password are empty
-	Password     string   // stored as plain text, never sent out by the API
-	Token        string   // otlp only, Bearer. Stored as plain text, never sent out by the API
-	CredentialID string   // influxdb only, a UUID when enabled
-	Enabled      bool
+	ID            uint
+	Name          string   // unique, not empty
+	Type          SinkType // influxdb or otlp
+	URL           string   // influxdb: http(s)://host:port, otlp: the full endpoint URL
+	InfluxVersion string   // influxdb only: v1, v2 or v3. Empty is read and stored as v1
+	Org           string   // influxdb v2 only
+	DB            string   // influxdb only: the database (v1, v3) or the bucket (v2)
+	Username      string   // Basic auth (otlp, influxdb v1). No auth when both username and password are empty
+	Password      string   // stored as plain text, never sent out by the API
+	Token         string   // otlp and influxdb v2/v3. Stored as plain text, never sent out by the API
+	CredentialID  string   // influxdb only, a UUID when enabled
+	Enabled       bool
 }
 
 // Snapshot is everything the emulator needs to run, read at one point in time.
@@ -99,16 +108,18 @@ type settingsRow struct {
 func (settingsRow) TableName() string { return "settings" }
 
 type sinkRow struct {
-	ID           uint   `gorm:"primaryKey"`
-	Name         string `gorm:"not null;uniqueIndex"`
-	Type         string `gorm:"not null"`
-	URL          string
-	DB           string
-	Username     string
-	Password     string
-	Token        string
-	CredentialID string
-	Enabled      bool
+	ID            uint   `gorm:"primaryKey"`
+	Name          string `gorm:"not null;uniqueIndex"`
+	Type          string `gorm:"not null"`
+	URL           string
+	InfluxVersion string
+	Org           string
+	DB            string
+	Username      string
+	Password      string
+	Token         string
+	CredentialID  string
+	Enabled       bool
 }
 
 func (sinkRow) TableName() string { return "sinks" }
@@ -296,6 +307,7 @@ func (s *Store) SaveSettings(in Settings) error {
 // CreateSink validates and stores a new sink. The ID of the argument is ignored.
 func (s *Store) CreateSink(in Sink) (Sink, error) {
 	in.ID = 0
+	in = defaultInfluxVersion(in)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out Sink
@@ -325,7 +337,10 @@ func (s *Store) CreateSink(in Sink) (Sink, error) {
 // Empty Password or Token means "keep the stored value", because the API never sends them out.
 // When the URL changes the stored Password and Token are dropped instead, so a sink cannot be pointed
 // at another server and still send the old credentials there. New values sent with the URL are used.
+// When the type or the InfluxDB version changes, the stored secrets the new one does not send are dropped
+// the same way (and the stored Username with the Password), so no unused secret stays behind.
 func (s *Store) UpdateSink(in Sink) (Sink, error) {
+	in = defaultInfluxVersion(in)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out Sink
@@ -337,13 +352,18 @@ func (s *Store) UpdateSink(in Sink) (Sink, error) {
 			}
 			return err
 		}
+		old := cur.sink()
+		sameMode := in.Type == old.Type && in.InfluxVersion == old.InfluxVersion
 		if in.URL == cur.URL {
-			if in.Password == "" {
+			if in.Password == "" && (sameMode || usesPassword(in)) {
 				in.Password = cur.Password
 			}
-			if in.Token == "" {
+			if in.Token == "" && (sameMode || usesToken(in)) {
 				in.Token = cur.Token
 			}
+		}
+		if !sameMode && !usesPassword(in) && in.Username == cur.Username {
+			in.Username = ""
 		}
 		others, err := sinkNames(tx, in.ID)
 		if err != nil {
@@ -480,6 +500,13 @@ func ValidateSink(sk Sink, others []string) []string {
 			add("%s: url %q must start with http:// or https:// and have a host", label, sk.URL)
 		}
 	}
+	if sk.Type == SinkInfluxDB {
+		switch sk.InfluxVersion {
+		case "", InfluxV1, InfluxV2, InfluxV3:
+		default:
+			add("%s: influx_version %q must be %q, %q or %q", label, sk.InfluxVersion, InfluxV1, InfluxV2, InfluxV3)
+		}
+	}
 	if !sk.Enabled {
 		return p
 	}
@@ -488,8 +515,21 @@ func ValidateSink(sk Sink, others []string) []string {
 	}
 	switch sk.Type {
 	case SinkInfluxDB:
-		if sk.DB == "" {
-			add("%s: db is empty", label)
+		switch sk.InfluxVersion {
+		case "", InfluxV1, InfluxV3:
+			if sk.DB == "" {
+				add("%s: db is empty", label)
+			}
+		case InfluxV2:
+			if sk.Org == "" {
+				add("%s: org is empty (InfluxDB v2 writes need the organization)", label)
+			}
+			if sk.DB == "" {
+				add("%s: db is empty (the bucket for InfluxDB v2)", label)
+			}
+			if sk.Token == "" {
+				add("%s: token is empty (InfluxDB v2 needs an API token)", label)
+			}
 		}
 		if sk.CredentialID == "" {
 			add("%s: credential_id is empty (the id returned after registering the credential in the management platform)", label)
@@ -503,8 +543,32 @@ func ValidateSink(sk Sink, others []string) []string {
 		if sk.CredentialID != "" {
 			add("%s: credential_id is only used by influxdb sinks", label)
 		}
+		if sk.InfluxVersion != "" {
+			add("%s: influx_version is only used by influxdb sinks", label)
+		}
+		if sk.Org != "" {
+			add("%s: org is only used by influxdb sinks", label)
+		}
 	}
 	return p
+}
+
+// usesPassword reports whether the sink sends Username and Password (Basic auth).
+func usesPassword(sk Sink) bool {
+	return sk.Type == SinkOTLP || (sk.Type == SinkInfluxDB && sk.InfluxVersion == InfluxV1)
+}
+
+// usesToken reports whether the sink sends Token.
+func usesToken(sk Sink) bool {
+	return sk.Type == SinkOTLP || (sk.Type == SinkInfluxDB && (sk.InfluxVersion == InfluxV2 || sk.InfluxVersion == InfluxV3))
+}
+
+// defaultInfluxVersion stores an influxdb sink without a version as v1, the only version before it was added.
+func defaultInfluxVersion(sk Sink) Sink {
+	if sk.Type == SinkInfluxDB && sk.InfluxVersion == "" {
+		sk.InfluxVersion = InfluxV1
+	}
+	return sk
 }
 
 func toSettingsRow(st Settings) settingsRow {
@@ -534,30 +598,34 @@ func (r settingsRow) settings() Settings {
 
 func toSinkRow(sk Sink) sinkRow {
 	return sinkRow{
-		ID:           sk.ID,
-		Name:         sk.Name,
-		Type:         string(sk.Type),
-		URL:          sk.URL,
-		DB:           sk.DB,
-		Username:     sk.Username,
-		Password:     sk.Password,
-		Token:        sk.Token,
-		CredentialID: sk.CredentialID,
-		Enabled:      sk.Enabled,
+		ID:            sk.ID,
+		Name:          sk.Name,
+		Type:          string(sk.Type),
+		URL:           sk.URL,
+		InfluxVersion: sk.InfluxVersion,
+		Org:           sk.Org,
+		DB:            sk.DB,
+		Username:      sk.Username,
+		Password:      sk.Password,
+		Token:         sk.Token,
+		CredentialID:  sk.CredentialID,
+		Enabled:       sk.Enabled,
 	}
 }
 
 func (r sinkRow) sink() Sink {
-	return Sink{
-		ID:           r.ID,
-		Name:         r.Name,
-		Type:         SinkType(r.Type),
-		URL:          r.URL,
-		DB:           r.DB,
-		Username:     r.Username,
-		Password:     r.Password,
-		Token:        r.Token,
-		CredentialID: r.CredentialID,
-		Enabled:      r.Enabled,
-	}
+	return defaultInfluxVersion(Sink{
+		ID:            r.ID,
+		Name:          r.Name,
+		Type:          SinkType(r.Type),
+		URL:           r.URL,
+		InfluxVersion: r.InfluxVersion,
+		Org:           r.Org,
+		DB:            r.DB,
+		Username:      r.Username,
+		Password:      r.Password,
+		Token:         r.Token,
+		CredentialID:  r.CredentialID,
+		Enabled:       r.Enabled,
+	})
 }
