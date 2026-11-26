@@ -35,7 +35,7 @@ passthrough 에서는 GPU 하나를 VM 하나만 쓸 수 있습니다(물리적 
 go run ./cmd/give-me-real-gpu -dump-topology
 ```
 
-이 출력을 고쳐 파일로 저장하고 설정의 `topology_file` 에 지정하면 다른 구성을 에뮬레이트할 수 있습니다.
+다른 구성을 에뮬레이트하려면 토폴로지 파일을 직접 만듭니다([토폴로지 직접 만들기](#토폴로지-직접-만들기) 참고).
 
 ## 쓰는 지표
 
@@ -185,6 +185,204 @@ sink 는 compose 네트워크 안의 서비스 이름을 가리키게 합니다.
 curl -sG http://localhost:18086/query --data-urlencode db=telegraf --data-urlencode 'q=SHOW MEASUREMENTS'
 ```
 
+## 토폴로지 직접 만들기
+
+기본 6노드는 코드 안에서 만들어집니다. 다른 클라우드를 에뮬레이트하려면 JSON 파일로 적고 `topology_file` 에 지정합니다.
+토폴로지 파일은 적힌 그대로 씁니다. 에뮬레이터가 id, 주소, 이름을 대신 만들어 주지 않습니다.
+
+1. 기본 토폴로지에서 시작합니다.
+
+   ```sh
+   go run ./cmd/give-me-real-gpu -dump-topology > topology.json
+   # Go 가 없으면 docker compose 가 빌드한 이미지로
+   docker run --rm give-me-real-gpu:dev -dump-topology > topology.json
+   ```
+
+2. 고칩니다. 필요 없는 노드, GPU, VM 을 지우거나, 하나를 복사해 새 이름과 새 id 를 붙입니다
+   (`uuidgen` 으로 새 UUID 를 얻을 수 있습니다). 아래 [규칙](#시작할-때-검사하는-규칙)을 지킵니다.
+
+3. 파일을 컨테이너에 마운트합니다. compose 는 `config.json` 만 마운트하므로 `compose.yaml` 에 bind 마운트를 하나 더 넣습니다.
+   넣지 않으면 `open topology file: ... no such file or directory` 로 멈춥니다.
+
+   ```yaml
+   services:
+     emulator:
+       volumes:
+         - type: bind
+           source: ./config.json
+           target: /etc/give-me-real-gpu/config.json
+           read_only: true
+           bind:
+             create_host_path: false
+         - type: bind
+           source: ./topology.json
+           target: /etc/give-me-real-gpu/topology.json
+           read_only: true
+           bind:
+             create_host_path: false
+   ```
+
+   설정에는 컨테이너 안의 경로를 적고, nonroot 사용자(uid 65532)가 읽을 수 있게 권한을 줍니다.
+
+   ```json
+   "topology_file": "/etc/give-me-real-gpu/topology.json"
+   ```
+
+   ```sh
+   chmod 644 topology.json
+   ```
+
+   컨테이너 없이 돌릴 때는 `topology_file` 이 보통 경로입니다. 상대 경로는 설정 파일 위치가 아니라 작업 디렉터리 기준입니다.
+
+4. 다시 시작하고 첫 로그 줄의 개수를 확인합니다.
+
+   ```sh
+   docker compose up -d --force-recreate emulator
+   docker compose logs emulator | head -2
+   # level=INFO msg="give-me-real-gpu starting" ... hypervisors=1 vms=1
+   ```
+
+   규칙을 어긴 파일이면 시작하지 않고, 찾은 문제를 전부 에러에 나열합니다. 예를 들면 이렇습니다.
+
+   ```
+   level=ERROR msg="failed to load the topology" err="validate topology file /etc/give-me-real-gpu/topology.json: hypervisor emu-pt-01 gpu 0: passthrough GPU has 2 VMs (max 1)\nvm emu-pt01-g1-1: gpu_index 1 does not match the GPU it is attached to, 0 ..."
+   ```
+
+### 가장 작은 토폴로지
+
+vGPU 노드 하나에 A10 한 장, VM 하나입니다. 값은 모두 기본 토폴로지에서 가져왔습니다.
+
+```json
+{
+  "region": "RegionOne",
+  "domain_id": "default",
+  "project_id": "f2aeea254abf2861de80ddccb3cc7225",
+  "project_name": "emu-gpu",
+  "user_id": "bbd08f19db80d3d802e4789fc042589f",
+  "user_name": "emu-admin",
+  "hypervisors": [
+    {
+      "id": 1,
+      "uuid": "822a5a71-e486-59c6-b836-7f4fae56f5a3",
+      "hostname": "emu-vgpu-01",
+      "host_ip": "192.0.2.11",
+      "mode": "VGPU",
+      "vcpus": 128,
+      "memory_mb": 1048576,
+      "local_gb": 3576,
+      "driver_version": "595.91.04",
+      "cuda_version": "13020",
+      "gpus": [
+        {
+          "index": 0,
+          "uuid": "GPU-de1a1acc-d068-5846-a4eb-6cf09db837a0",
+          "bus_id": "00000000:18:00.0",
+          "host_bdf": "18:00.0",
+          "model_name": "NVIDIA A10",
+          "device_id": "2236",
+          "memory_mib": 23028,
+          "vbios": "94.02.5C.00.0A",
+          "arch": "Ampere",
+          "profile": {"name": "NVIDIA A10-4Q", "type": "nvidia-592", "framebuffer_mb": 4096, "max_instances": 6},
+          "vms": [
+            {
+              "id": "da322bfb-45f5-52df-8e74-486cd3903278",
+              "name": "emu-vgpu01-g0-1",
+              "instance_name": "instance-00000001",
+              "flavor_id": "7c97c4d2-368c-51dc-ab66-b69b6c9ed3b1",
+              "ip": "198.51.100.11",
+              "hypervisor": "emu-vgpu-01",
+              "gpu_index": 0,
+              "mode": "VGPU",
+              "vgpu_uuid": "6d62e585-5e92-5ddf-8911-a4400df629de",
+              "mig_gpu_instance_id": -1,
+              "guest_bdf": "00:05.0",
+              "guest_driver_version": "595.91.07",
+              "vcpus": 8,
+              "memory_mb": 32768,
+              "disk_gb": 100
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "flavors": [
+    {
+      "id": "7c97c4d2-368c-51dc-ab66-b69b6c9ed3b1",
+      "name": "emu-vgpu-a10-4q",
+      "vcpus": 8,
+      "ram_mb": 32768,
+      "disk_gb": 100,
+      "extra_specs": {"resources:VGPU": "1", "trait:CUSTOM_NVIDIA_A10_4Q": "required"}
+    }
+  ]
+}
+```
+
+MIG GPU 는 `profile` 대신 `mig_instances` 를 두고, 그 GPU 의 VM 은 자기가 쓰는 인스턴스를 가리킵니다.
+
+```json
+"mig_instances": [
+  {"gpu_instance_id": 7, "profile": "1g.10gb", "slices": 1, "memory_mib": 9728,
+   "vgpu_profile": {"name": "NVIDIA A100D-1-10C", "type": "nvidia-699", "framebuffer_mb": 10240, "max_instances": 7}}
+]
+```
+
+```json
+"mode": "MIG", "vgpu_uuid": "104b9515-0c86-5e9e-8603-f8122f35a1f3", "mig_gpu_instance_id": 7
+```
+
+passthrough GPU 는 둘 다 없습니다. 그 VM 에는 `vgpu_uuid` 가 없고 `mig_gpu_instance_id` 는 `-1` 입니다.
+passthrough 노드는 호스트에 NVIDIA 드라이버가 없으므로 `driver_version` 과 `cuda_version` 을 비워 둡니다.
+
+### 키
+
+| 위치 | 키 | 의미 |
+|------|-----|------|
+| 최상위 | `region`, `domain_id` | keystone catalog 의 region 과 keystone 도메인 |
+| 최상위 | `project_id`, `project_name` | 모든 VM 이 속한 프로젝트. `project_id` 는 필수 |
+| 최상위 | `user_id`, `user_name` | 가짜 keystone 사용자. `user_name` 은 필수이고, 관리 플랫폼에 등록하는 사용자입니다 |
+| `hypervisors[]` | `id`, `uuid` | nova hypervisor 정수 id 와 uuid |
+| `hypervisors[]` | `hostname` | nova 의 `hypervisor_hostname`, 호스트 지표의 `host` 태그 |
+| `hypervisors[]` | `host_ip` | nova `host_ip`, net 지표의 주소 |
+| `hypervisors[]` | `mode` | `VGPU`, `MIG`, `PASSTHROUGH` 중 하나. `gpu_type` 태그 값이기도 합니다 |
+| `hypervisors[]` | `vcpus`, `memory_mb`, `local_gb` | nova 가 보고하는 물리 자원 |
+| `hypervisors[]` | `driver_version`, `cuda_version` | 호스트 NVIDIA 드라이버와 CUDA 드라이버 버전(`13020` 형식). passthrough 노드는 비움 |
+| `gpus[]` | `index` | nvidia-smi 인덱스, 0 부터 |
+| `gpus[]` | `uuid` | `GPU-` 뒤에 UUID |
+| `gpus[]` | `bus_id`, `host_bdf` | PCI 주소의 두 형식: `00000000:18:00.0` 과 `18:00.0`(소문자) |
+| `gpus[]` | `model_name`, `device_id`, `memory_mib`, `vbios`, `arch` | 모델, PCI device id(vendor 는 항상 10de), 프레임버퍼, VBIOS, 아키텍처 |
+| `gpus[]` | `profile` | VGPU 노드만: 이 GPU 에 만든 vGPU 타입(`name`, mdev `type`, `framebuffer_mb`, `max_instances`) |
+| `gpus[]` | `mig_instances` | MIG 노드만: GPU 인스턴스(`gpu_instance_id`, `profile`, `slices`, `memory_mib`, `vgpu_profile`) |
+| `gpus[]` | `vms` | 이 GPU 를 쓰는 VM. `[]` 이면 미할당 GPU |
+| `vms[]` | `id`, `name`, `instance_name` | nova server id, server 이름(VM 지표의 `host` 태그이기도 함), libvirt 이름 |
+| `vms[]` | `hypervisor`, `gpu_index`, `mode` | VM 이 도는 곳. 이 VM 이 들어 있는 노드·GPU 와 같아야 합니다 |
+| `vms[]` | `flavor_id` | `flavors` 안 항목의 id |
+| `vms[]` | `ip` | fixed ip |
+| `vms[]` | `vgpu_uuid` | vGPU 의 mdev uuid(VGPU 와 MIG). passthrough 는 비움 |
+| `vms[]` | `mig_gpu_instance_id` | 쓰는 MIG 인스턴스의 `gpu_instance_id`. 다른 노드는 `-1` |
+| `vms[]` | `guest_bdf`, `guest_driver_version` | VM 안에서 보이는 PCI 주소와 NVIDIA 드라이버 |
+| `vms[]` | `vcpus`, `memory_mb`, `disk_gb` | VM 크기 |
+| `flavors[]` | `id`, `name`, `vcpus`, `ram_mb`, `disk_gb`, `extra_specs` | nova flavor. GPU flavor 는 `extra_specs` 에 `resources:VGPU` 나 `pci_passthrough:alias` 가 있습니다 |
+
+### 시작할 때 검사하는 규칙
+
+- `project_id` 와 `user_name` 이 있어야 합니다. 알 수 없는 키는 오타로 보고 거부합니다.
+- 다음은 겹치면 안 됩니다: hypervisor `hostname`, `id`, `uuid` / GPU `uuid` / 한 노드 안의 GPU `index` 와 `bus_id` /
+  VM `name`, `id`, `instance_name`, `vgpu_uuid` / flavor `id` 와 `name`.
+- `mode` 는 `VGPU`, `MIG`, `PASSTHROUGH` 중 하나이고, VM 의 `mode` 는 노드의 `mode` 와 같아야 합니다.
+- VM 의 `hypervisor` 는 그 VM 이 들어 있는 노드의 `hostname`, `gpu_index` 는 그 GPU 의 `index` 여야 하고,
+  `flavor_id` 는 `flavors` 에 있어야 합니다.
+- VGPU: 모든 GPU 에 `profile` 이 있고, GPU 하나의 VM 수는 `profile.max_instances` 이하이며, 모든 VM 에 `vgpu_uuid` 가 있습니다.
+- MIG: 한 GPU 의 인스턴스 `slices` 합이 7 이하이고, `gpu_instance_id` 는 GPU 안에서 겹치지 않으며, VM 의
+  `mig_gpu_instance_id` 는 그 GPU 의 인스턴스를 가리키고, 인스턴스 하나에 VM 은 하나까지이며, 모든 VM 에 `vgpu_uuid` 가 있습니다.
+- PASSTHROUGH: GPU 하나에 VM 은 하나까지이고, VM 에 `vgpu_uuid` 가 없습니다.
+- VGPU 와 PASSTHROUGH 노드에서 `mig_gpu_instance_id` 는 `-1` 입니다.
+
+형식은 검사하지 않습니다. 관리 플랫폼과 모니터링 서버가 이 값들을 저장하므로 덤프와 같은 형식을 지킵니다
+(UUID, `project_id` 와 `user_id` 는 16진수 32자).
+
 ## 설정
 
 `config.json` (`config.example.json` 을 복사해 만듭니다. `config.json` 은 git 에 커밋하지 않습니다).
@@ -208,6 +406,58 @@ curl -sG http://localhost:18086/query --data-urlencode db=telegraf --data-urlenc
 | `sinks[].enabled` | `false` | 켜진 sink 에만 씁니다. 켜진 sink 에는 url, db, credential_id 가 있어야 합니다 |
 
 기간 값은 `"10s"`, `"1h"` 같은 문자열입니다. 알 수 없는 키는 오타로 보고 시작을 거부합니다.
+
+### InfluxDB sink
+
+`sinks` 의 항목 하나가 InfluxDB v1 데이터베이스 하나입니다. 아래 예에서 `site-a` 는 계정으로 쓰고, `site-b` 는
+인증을 끈 InfluxDB 에 https 로 붙는 설정이며 아직 꺼 둔 상태입니다.
+
+```json
+"sinks": [
+  {
+    "name": "site-a",
+    "url": "http://influxdb-a.example.com:8086",
+    "db": "telegraf",
+    "username": "<influxdb-user>",
+    "password": "<change-me>",
+    "credential_id": "3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07",
+    "enabled": true
+  },
+  {
+    "name": "site-b",
+    "url": "https://influxdb-b.example.com:8086",
+    "db": "telegraf",
+    "username": "",
+    "password": "",
+    "credential_id": "",
+    "enabled": false
+  }
+]
+```
+
+| 키 | 어디서 가져오나 |
+|-----|-----------------|
+| `url` | 모니터링 서버가 읽는 InfluxDB, 즉 실제 수집 에이전트가 쓰는 곳. `http://` 또는 `https://`, 기본 포트 8086 |
+| `db` | 그 에이전트가 쓰는 데이터베이스 (telegraf 라면 `[[outputs.influxdb]]` 의 `database`) |
+| `username`, `password` | `db` 에 쓸 수 있는 계정. 에이전트 계정(telegraf 의 `username`, `password`)을 쓰면 됩니다. 인증이 꺼져 있으면 둘 다 비웁니다 |
+| `credential_id` | [빠른 시작](#빠른-시작) 4단계에서 등록한 OpenStack credential 에 관리 플랫폼이 붙인 id |
+
+쓰는 방식입니다.
+
+- `interval` 마다 켜진 sink 하나에 한 묶음씩 `POST <url>/write?db=<db>&precision=ns` 로 보냅니다. gzip 으로 압축하고, 요청 하나에 최대 5000줄입니다.
+- `username` 이나 `password` 가 있으면 HTTP Basic 인증을 씁니다.
+- 데이터베이스를 만들지 않습니다. `db` 가 미리 있어야 하고, 계정에 쓰기 권한이 있어야 합니다.
+- 네트워크 에러나 5xx 는 1초 뒤 한 번 더 보냅니다. 400(필드 타입 충돌 등)은 로그에 남기고 나머지 요청은 계속 보냅니다.
+- 성공한 묶음마다 로그에 `msg="InfluxDB write" sink=site-a lines=...` 가, 실패하면 에러와 함께 `msg="InfluxDB write failed"` 가 남습니다.
+
+꺼진 sink 는 검사하지 않으므로 덜 채운 채로 두어도 됩니다. 계정을 `config.json` 에 두고 싶지 않으면 거기서는
+`username` 과 `password` 를 비워 두고 `emulator.env` 에 넣습니다([환경 변수](#환경-변수) 참고).
+
+```sh
+# emulator.env (fill in the values after "=")
+EMU_SINK_SITE_A_USERNAME=
+EMU_SINK_SITE_A_PASSWORD=
+```
 
 ### 환경 변수
 
@@ -258,7 +508,8 @@ Go 표준 라이브러리만 씁니다. 이미지는 `golang:1.27-alpine` 에서
   관리 플랫폼에 이 에뮬레이터용 credential 을 따로 등록하고 그 credential id 만 씁니다. 메트릭은
   credential id 로 구분하므로 실제 노드의 credential id 를 다시 쓰면 데이터가 섞입니다.
 - 이 프로그램은 자신이 쓴 행을 지우지 않습니다. 테스트가 끝나면 sink 를 끄고, 필요하면 InfluxDB 쪽에서 credential id 기준으로 지웁니다.
-- 토폴로지(노드나 VM 이름)를 바꾸면 id 도 바뀝니다. 예전 hypervisor 와 VM 이 관리 플랫폼에 남아 있을 수 있습니다.
+- hypervisor 나 VM 이 토폴로지에서 빠지거나 id 가 바뀌면 예전 것이 관리 플랫폼에 남아 있을 수 있습니다. 기본 토폴로지는
+  id 를 이름에서 만들므로 이름을 바꾸면 id 도 바뀝니다. 토폴로지 파일은 파일에 적힌 id 를 그대로 씁니다.
 - 가짜 API 는 관리 플랫폼이 동기화에 쓰는 조회 호출만 에뮬레이트합니다. VM 생성·삭제 같은 쓰기 요청은 처리하지 않습니다.
 
 ## 라이선스

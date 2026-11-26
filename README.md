@@ -35,7 +35,7 @@ To see the full default topology (ids, IPs and flavors included):
 go run ./cmd/give-me-real-gpu -dump-topology
 ```
 
-Edit that output, save it as a file and set `topology_file` in the config to emulate a different layout.
+To emulate a different layout, write your own topology file (see [Custom topology](#custom-topology)).
 
 ## Metrics written
 
@@ -185,6 +185,204 @@ From the host, read it on port 18086.
 curl -sG http://localhost:18086/query --data-urlencode db=telegraf --data-urlencode 'q=SHOW MEASUREMENTS'
 ```
 
+## Custom topology
+
+The default six nodes are built in code. To emulate a different cloud, describe it in a JSON file and set `topology_file`.
+A topology file is used as written: the emulator does not generate ids, addresses or names for it.
+
+1. Start from the default topology.
+
+   ```sh
+   go run ./cmd/give-me-real-gpu -dump-topology > topology.json
+   # without Go, from the image that docker compose built
+   docker run --rm give-me-real-gpu:dev -dump-topology > topology.json
+   ```
+
+2. Edit it. Delete the nodes, GPUs and VMs you do not need, or copy one and give the copy new names and ids
+   (`uuidgen` gives a new UUID). Keep the [rules](#rules-checked-at-startup) below.
+
+3. Mount the file into the container. compose only mounts `config.json`, so add a second bind mount to `compose.yaml`.
+   Without it the program stops with `open topology file: ... no such file or directory`.
+
+   ```yaml
+   services:
+     emulator:
+       volumes:
+         - type: bind
+           source: ./config.json
+           target: /etc/give-me-real-gpu/config.json
+           read_only: true
+           bind:
+             create_host_path: false
+         - type: bind
+           source: ./topology.json
+           target: /etc/give-me-real-gpu/topology.json
+           read_only: true
+           bind:
+             create_host_path: false
+   ```
+
+   Then point the config at the path inside the container, and make the file readable for the nonroot user (uid 65532).
+
+   ```json
+   "topology_file": "/etc/give-me-real-gpu/topology.json"
+   ```
+
+   ```sh
+   chmod 644 topology.json
+   ```
+
+   Without a container, `topology_file` is a normal path. A relative path is resolved from the working directory, not from the config file.
+
+4. Restart and check the counts in the first log line.
+
+   ```sh
+   docker compose up -d --force-recreate emulator
+   docker compose logs emulator | head -2
+   # level=INFO msg="give-me-real-gpu starting" ... hypervisors=1 vms=1
+   ```
+
+   A file that breaks a rule stops the program, and the error lists every problem it found, for example:
+
+   ```
+   level=ERROR msg="failed to load the topology" err="validate topology file /etc/give-me-real-gpu/topology.json: hypervisor emu-pt-01 gpu 0: passthrough GPU has 2 VMs (max 1)\nvm emu-pt01-g1-1: gpu_index 1 does not match the GPU it is attached to, 0 ..."
+   ```
+
+### A minimal topology
+
+One vGPU node with one A10 and one VM. Every value is copied from the default topology.
+
+```json
+{
+  "region": "RegionOne",
+  "domain_id": "default",
+  "project_id": "f2aeea254abf2861de80ddccb3cc7225",
+  "project_name": "emu-gpu",
+  "user_id": "bbd08f19db80d3d802e4789fc042589f",
+  "user_name": "emu-admin",
+  "hypervisors": [
+    {
+      "id": 1,
+      "uuid": "822a5a71-e486-59c6-b836-7f4fae56f5a3",
+      "hostname": "emu-vgpu-01",
+      "host_ip": "192.0.2.11",
+      "mode": "VGPU",
+      "vcpus": 128,
+      "memory_mb": 1048576,
+      "local_gb": 3576,
+      "driver_version": "595.91.04",
+      "cuda_version": "13020",
+      "gpus": [
+        {
+          "index": 0,
+          "uuid": "GPU-de1a1acc-d068-5846-a4eb-6cf09db837a0",
+          "bus_id": "00000000:18:00.0",
+          "host_bdf": "18:00.0",
+          "model_name": "NVIDIA A10",
+          "device_id": "2236",
+          "memory_mib": 23028,
+          "vbios": "94.02.5C.00.0A",
+          "arch": "Ampere",
+          "profile": {"name": "NVIDIA A10-4Q", "type": "nvidia-592", "framebuffer_mb": 4096, "max_instances": 6},
+          "vms": [
+            {
+              "id": "da322bfb-45f5-52df-8e74-486cd3903278",
+              "name": "emu-vgpu01-g0-1",
+              "instance_name": "instance-00000001",
+              "flavor_id": "7c97c4d2-368c-51dc-ab66-b69b6c9ed3b1",
+              "ip": "198.51.100.11",
+              "hypervisor": "emu-vgpu-01",
+              "gpu_index": 0,
+              "mode": "VGPU",
+              "vgpu_uuid": "6d62e585-5e92-5ddf-8911-a4400df629de",
+              "mig_gpu_instance_id": -1,
+              "guest_bdf": "00:05.0",
+              "guest_driver_version": "595.91.07",
+              "vcpus": 8,
+              "memory_mb": 32768,
+              "disk_gb": 100
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "flavors": [
+    {
+      "id": "7c97c4d2-368c-51dc-ab66-b69b6c9ed3b1",
+      "name": "emu-vgpu-a10-4q",
+      "vcpus": 8,
+      "ram_mb": 32768,
+      "disk_gb": 100,
+      "extra_specs": {"resources:VGPU": "1", "trait:CUSTOM_NVIDIA_A10_4Q": "required"}
+    }
+  ]
+}
+```
+
+A MIG GPU has `mig_instances` instead of `profile`, and each of its VMs names the instance it uses:
+
+```json
+"mig_instances": [
+  {"gpu_instance_id": 7, "profile": "1g.10gb", "slices": 1, "memory_mib": 9728,
+   "vgpu_profile": {"name": "NVIDIA A100D-1-10C", "type": "nvidia-699", "framebuffer_mb": 10240, "max_instances": 7}}
+]
+```
+
+```json
+"mode": "MIG", "vgpu_uuid": "104b9515-0c86-5e9e-8603-f8122f35a1f3", "mig_gpu_instance_id": 7
+```
+
+A passthrough GPU has neither. Its VM has no `vgpu_uuid` and `mig_gpu_instance_id` is `-1`.
+Passthrough nodes leave `driver_version` and `cuda_version` empty, since the host has no NVIDIA driver.
+
+### Keys
+
+| Where | Key | Meaning |
+|-------|-----|---------|
+| top | `region`, `domain_id` | Region of the keystone catalog and keystone domain |
+| top | `project_id`, `project_name` | Project every VM belongs to. `project_id` is required |
+| top | `user_id`, `user_name` | Fake keystone user. `user_name` is required and is the user you register in the management platform |
+| `hypervisors[]` | `id`, `uuid` | nova hypervisor integer id and uuid |
+| `hypervisors[]` | `hostname` | `hypervisor_hostname` in nova and the `host` tag of host metrics |
+| `hypervisors[]` | `host_ip` | nova `host_ip` and the address in net metrics |
+| `hypervisors[]` | `mode` | `VGPU`, `MIG` or `PASSTHROUGH`. Also the `gpu_type` tag |
+| `hypervisors[]` | `vcpus`, `memory_mb`, `local_gb` | Physical resources reported by nova |
+| `hypervisors[]` | `driver_version`, `cuda_version` | Host NVIDIA driver and CUDA driver version (`13020` form). Empty on passthrough nodes |
+| `gpus[]` | `index` | nvidia-smi index, from 0 |
+| `gpus[]` | `uuid` | `GPU-` followed by a UUID |
+| `gpus[]` | `bus_id`, `host_bdf` | PCI address in two forms: `00000000:18:00.0` and `18:00.0` (lower case) |
+| `gpus[]` | `model_name`, `device_id`, `memory_mib`, `vbios`, `arch` | Model, PCI device id (vendor is always 10de), framebuffer, VBIOS and architecture |
+| `gpus[]` | `profile` | VGPU nodes only: the vGPU type created on this GPU (`name`, mdev `type`, `framebuffer_mb`, `max_instances`) |
+| `gpus[]` | `mig_instances` | MIG nodes only: GPU instances (`gpu_instance_id`, `profile`, `slices`, `memory_mib`, `vgpu_profile`) |
+| `gpus[]` | `vms` | VMs using this GPU. `[]` means the GPU is unassigned |
+| `vms[]` | `id`, `name`, `instance_name` | nova server id, server name (also the `host` tag of VM metrics) and libvirt name |
+| `vms[]` | `hypervisor`, `gpu_index`, `mode` | Where the VM runs. Must match the node and GPU it is listed under |
+| `vms[]` | `flavor_id` | Id of an entry in `flavors` |
+| `vms[]` | `ip` | Fixed ip |
+| `vms[]` | `vgpu_uuid` | mdev uuid of the vGPU (VGPU and MIG). Empty for passthrough |
+| `vms[]` | `mig_gpu_instance_id` | `gpu_instance_id` of the MIG instance it uses. `-1` on other nodes |
+| `vms[]` | `guest_bdf`, `guest_driver_version` | PCI address and NVIDIA driver inside the VM |
+| `vms[]` | `vcpus`, `memory_mb`, `disk_gb` | VM size |
+| `flavors[]` | `id`, `name`, `vcpus`, `ram_mb`, `disk_gb`, `extra_specs` | nova flavors. GPU flavors carry `resources:VGPU` or `pci_passthrough:alias` in `extra_specs` |
+
+### Rules checked at startup
+
+- `project_id` and `user_name` are set. Unknown keys are treated as typos and rejected.
+- These are unique: hypervisor `hostname`, `id` and `uuid`; GPU `uuid`; GPU `index` and `bus_id` within a node;
+  VM `name`, `id`, `instance_name` and `vgpu_uuid`; flavor `id` and `name`.
+- `mode` is `VGPU`, `MIG` or `PASSTHROUGH`, and each VM has the same `mode` as its node.
+- Each VM's `hypervisor` is the `hostname` of the node it is listed under, its `gpu_index` is the `index` of that GPU,
+  and its `flavor_id` exists in `flavors`.
+- VGPU: every GPU has a `profile`, a GPU has at most `profile.max_instances` VMs, and every VM has a `vgpu_uuid`.
+- MIG: the `slices` of a GPU's instances add up to 7 or less, `gpu_instance_id` is unique within the GPU, every VM's
+  `mig_gpu_instance_id` names an instance on its GPU, an instance has at most one VM, and every VM has a `vgpu_uuid`.
+- PASSTHROUGH: a GPU has at most one VM, and VMs have no `vgpu_uuid`.
+- On VGPU and PASSTHROUGH nodes `mig_gpu_instance_id` is `-1`.
+
+Formats are not checked. Keep the forms the dump uses (UUIDs, 32 hex characters for `project_id` and `user_id`),
+because the management platform and the monitoring server store these values.
+
 ## Settings
 
 `config.json` (copy `config.example.json`; `config.json` is not committed to git).
@@ -208,6 +406,58 @@ curl -sG http://localhost:18086/query --data-urlencode db=telegraf --data-urlenc
 | `sinks[].enabled` | `false` | Only enabled sinks are written to. An enabled sink needs url, db and credential_id |
 
 Durations are strings such as `"10s"` or `"1h"`. Unknown keys are treated as typos and the program refuses to start.
+
+### InfluxDB sinks
+
+Each entry in `sinks` is one InfluxDB v1 database. In this example `site-a` writes with an account, and `site-b` is an
+InfluxDB with authentication disabled, reached over https and not enabled yet.
+
+```json
+"sinks": [
+  {
+    "name": "site-a",
+    "url": "http://influxdb-a.example.com:8086",
+    "db": "telegraf",
+    "username": "<influxdb-user>",
+    "password": "<change-me>",
+    "credential_id": "3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07",
+    "enabled": true
+  },
+  {
+    "name": "site-b",
+    "url": "https://influxdb-b.example.com:8086",
+    "db": "telegraf",
+    "username": "",
+    "password": "",
+    "credential_id": "",
+    "enabled": false
+  }
+]
+```
+
+| Key | Where the value comes from |
+|-----|----------------------------|
+| `url` | The InfluxDB the monitoring server reads, where the real collection agents write. `http://` or `https://`, port 8086 by default |
+| `db` | The database those agents write to (with telegraf, `database` in `[[outputs.influxdb]]`) |
+| `username`, `password` | An account that can write to `db`, such as the agents' account (telegraf `username` and `password`). Leave both empty when authentication is disabled |
+| `credential_id` | The id the management platform gives the OpenStack credential you registered in [Quick start](#quick-start) step 4 |
+
+How the emulator writes:
+
+- Every `interval` it sends one batch per enabled sink as `POST <url>/write?db=<db>&precision=ns`, gzip-compressed, up to 5000 lines per request.
+- When `username` or `password` is set it uses HTTP Basic authentication.
+- It does not create the database. `db` must already exist and the account needs write permission on it.
+- A network error or 5xx is retried once after 1 second. A 400 (for example a field type conflict) is logged and the remaining requests are still sent.
+- The log shows `msg="InfluxDB write" sink=site-a lines=...` for each successful batch and `msg="InfluxDB write failed"` with the error otherwise.
+
+A disabled sink is not checked, so it can be left half filled in. To keep the account out of `config.json`, leave `username`
+and `password` empty there and set them in `emulator.env` (see [Environment variables](#environment-variables)):
+
+```sh
+# emulator.env (fill in the values after "=")
+EMU_SINK_SITE_A_USERNAME=
+EMU_SINK_SITE_A_PASSWORD=
+```
 
 ### Environment variables
 
@@ -258,7 +508,8 @@ Only the Go standard library is used. The image is built on `golang:1.27-alpine`
   register a separate credential for this emulator in the management platform and use only its credential id. Metrics are told
   apart by credential id, so reusing a real node's credential id mixes the data.
 - This program never deletes rows it has written. When testing is done, disable the sink and, if needed, delete by credential id on the InfluxDB side.
-- Changing the topology (node or VM names) changes the ids. Old hypervisors and VMs may remain in the management platform.
+- When hypervisors or VMs leave the topology or get new ids, the old ones may remain in the management platform. In the default
+  topology ids are derived from names, so renaming changes them. In a topology file ids are whatever the file says.
 - The fake API only emulates the read calls the management platform uses for syncing. Write requests such as creating or deleting VMs are not handled.
 
 ## License

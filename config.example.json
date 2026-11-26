@@ -8,7 +8,7 @@
   "xid_rate": 0.002,
   "dry_run": false,
   "sinks": [
-    {"name": "site-a", "url": "http://192.0.2.20:8086", "db": "telegraf", "username": "", "password": "", "credential_id": "", "enabled": false},
+    {"name": "site-a", "url": "http://192.0.2.20:8086", "db": "telegraf", "username": "<influxdb-user>", "password": "<change-me>", "credential_id": "", "enabled": false},
     {"name": "site-b", "url": "http://192.0.2.30:8086", "db": "telegraf", "username": "", "password": "", "credential_id": "", "enabled": false}
   ]
 }
