@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -303,5 +304,40 @@ func TestFormatDuration(t *testing.T) {
 		if got := formatDuration(d); got != want {
 			t.Errorf("formatDuration(%s) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+func TestErrorHandler(t *testing.T) {
+	e, _ := newServer(t, nil)
+	e.HTTPErrorHandler = ErrorHandler
+	e.GET("/api/v1/teapot", func(c *echo.Context) error { return echo.NewHTTPError(http.StatusTeapot, "short and stout") })
+	e.GET("/outside", func(c *echo.Context) error { return c.NoContent(http.StatusNoContent) })
+	e.GET("/api/v1/broken", func(c *echo.Context) error { return errors.New("internal detail " + secretNeedle) })
+
+	cases := []struct {
+		method, path string
+		code         int
+		errMsg       string
+	}{
+		{http.MethodGet, "/api/v1/nope", http.StatusNotFound, "Not Found"},
+		{http.MethodGet, "/nope", http.StatusNotFound, "Not Found"},
+		{http.MethodPost, "/outside", http.StatusMethodNotAllowed, "Method Not Allowed"},
+		{http.MethodGet, "/api/v1/teapot", http.StatusTeapot, "short and stout"},
+		{http.MethodGet, "/api/v1/broken", http.StatusInternalServerError, "Internal Server Error"},
+	}
+	for _, tc := range cases {
+		code, body := do(t, e, tc.method, tc.path, "")
+		wantError(t, code, body, tc.code, tc.errMsg, "")
+		if strings.Contains(body, `"message"`) {
+			t.Errorf("%s %s: echo default body: %s", tc.method, tc.path, body)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodHead, "/api/v1/nope", nil)
+	req.Host = testHost
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || rec.Body.Len() != 0 {
+		t.Errorf("HEAD: %d %q", rec.Code, rec.Body.String())
 	}
 }

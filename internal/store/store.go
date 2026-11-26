@@ -470,7 +470,13 @@ func ValidateSink(sk Sink, others []string) []string {
 		add("%s: type %q must be %q or %q", label, sk.Type, SinkInfluxDB, SinkOTLP)
 	}
 	if sk.URL != "" {
-		if u, err := url.Parse(sk.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		u, err := url.Parse(sk.URL)
+		switch {
+		case err != nil:
+			add("%s: url cannot be parsed; it must start with http:// or https:// and have a host", label)
+		case u.User != nil:
+			add("%s: url must not contain a user name or password; put them in the username and password fields", label)
+		case (u.Scheme != "http" && u.Scheme != "https") || u.Host == "":
 			add("%s: url %q must start with http:// or https:// and have a host", label, sk.URL)
 		}
 	}

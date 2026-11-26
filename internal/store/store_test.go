@@ -269,6 +269,13 @@ func TestSinkValidation(t *testing.T) {
 		{"bad scheme", Sink{Name: "a", Type: SinkInfluxDB, URL: "ftp://192.0.2.1"}, []string{"must start with http"}},
 		{"no host", Sink{Name: "a", Type: SinkOTLP, URL: "http://"}, []string{"must start with http"}},
 		{"enabled without url", Sink{Name: "a", Type: SinkOTLP, Enabled: true}, []string{"url is empty"}},
+		{"unparsable url", Sink{Name: "a", Type: SinkOTLP, URL: "http://192.0.2.1:bad port"}, []string{"url cannot be parsed"}},
+		{"userinfo in url", Sink{Name: "a", Type: SinkInfluxDB, URL: "http://admin:" + userinfoSecret + "@192.0.2.1:8086"},
+			[]string{"must not contain a user name or password"}},
+		{"user only in url", Sink{Name: "a", Type: SinkOTLP, URL: "https://" + userinfoSecret + "@192.0.2.1/v1/metrics"},
+			[]string{"must not contain a user name or password"}},
+		{"empty userinfo in url", Sink{Name: "a", Type: SinkOTLP, URL: "https://@192.0.2.1/v1/metrics"},
+			[]string{"must not contain a user name or password"}},
 		{"enabled influx missing db and cred", Sink{Name: "a", Type: SinkInfluxDB, URL: "http://192.0.2.1:8086", Enabled: true},
 			[]string{"db is empty", "credential_id is empty"}},
 		{"enabled influx bad cred", Sink{Name: "a", Type: SinkInfluxDB, URL: "http://192.0.2.1:8086", DB: "d", CredentialID: "0b3e6a52", Enabled: true},
@@ -278,6 +285,9 @@ func TestSinkValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		p := ValidateSink(tc.sink, nil)
+		if strings.Contains(strings.Join(p, "\n"), userinfoSecret) {
+			t.Errorf("%s: problems repeat the url credentials: %q", tc.name, p)
+		}
 		if len(p) != len(tc.want) {
 			t.Errorf("%s: got %d problems %q, want %d", tc.name, len(p), p, len(tc.want))
 		}
@@ -301,6 +311,39 @@ func TestSinkValidation(t *testing.T) {
 	}
 	if p := ValidateSink(influxSink("a"), []string{"b", "a"}); !hasProblem(p, "already used") {
 		t.Errorf("duplicate name not reported: %q", p)
+	}
+}
+
+// userinfoSecret stands for credentials typed into a sink URL. It must not come back in any message.
+const userinfoSecret = "userinfo-secret-1"
+
+func TestSinkURLCredentialsRefused(t *testing.T) {
+	s, _ := openTemp(t)
+	in := influxSink("site-a")
+	in.URL = "http://admin:" + userinfoSecret + "@192.0.2.1:8086"
+	_, err := s.CreateSink(in)
+	var ve *ValidationError
+	if !errors.As(err, &ve) || !hasProblem(ve.Problems, "must not contain a user name or password") {
+		t.Fatalf("create with url credentials: %v", err)
+	}
+	if strings.Contains(err.Error(), userinfoSecret) {
+		t.Errorf("error repeats the url credentials: %v", err)
+	}
+
+	a, err := s.CreateSink(influxSink("site-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.URL = in.URL
+	if _, err := s.UpdateSink(a); !errors.As(err, &ve) || strings.Contains(err.Error(), userinfoSecret) {
+		t.Errorf("update with url credentials: %v", err)
+	}
+	snap, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Sinks) != 1 || strings.Contains(snap.Sinks[0].URL, "@") {
+		t.Errorf("stored sinks %+v", snap.Sinks)
 	}
 }
 

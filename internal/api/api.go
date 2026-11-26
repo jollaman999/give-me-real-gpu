@@ -120,7 +120,7 @@ type handler struct {
 // Register adds the /api/v1 routes to e. sp may be nil, in which case /status reports an empty status.
 func Register(e *echo.Echo, st *store.Store, sp StatusProvider) {
 	h := &handler{st: st, sp: sp}
-	g := e.Group("/api/v1", guard)
+	g := e.Group("/api/v1", Guard)
 	g.GET("/status", h.getStatus)
 	g.GET("/settings", h.getSettings)
 	g.PUT("/settings", h.putSettings)
@@ -389,6 +389,36 @@ func invalid(c *echo.Context, problems []string) error {
 
 func notFound(c *echo.Context, msg string) error {
 	return c.JSON(http.StatusNotFound, errorBody{Error: msg})
+}
+
+// ErrorHandler is an echo.HTTPErrorHandler that answers {"error":"..."} like the handlers above,
+// so an unknown path (404) or method (405) has the same shape as any other API error.
+// The message is the status text or the message of an *echo.HTTPError; other error text is logged, not sent.
+func ErrorHandler(c *echo.Context, err error) {
+	if r, _ := echo.UnwrapResponse(c.Response()); r != nil && r.Committed {
+		return
+	}
+	code := echo.StatusCode(err)
+	if code == 0 {
+		code = http.StatusInternalServerError
+	}
+	msg := http.StatusText(code)
+	var he *echo.HTTPError
+	if errors.As(err, &he) && he.Message != "" {
+		msg = he.Message
+	}
+	if code >= http.StatusInternalServerError {
+		c.Logger().Error("request failed", "method", c.Request().Method, "path", c.Request().URL.Path, "error", err)
+	}
+	var werr error
+	if c.Request().Method == http.MethodHead {
+		werr = c.NoContent(code)
+	} else {
+		werr = c.JSON(code, errorBody{Error: msg})
+	}
+	if werr != nil {
+		c.Logger().Warn("failed to send the error response", "error", werr)
+	}
 }
 
 // fail maps a store error to 400 (validation), 404 (unknown id) or 500.

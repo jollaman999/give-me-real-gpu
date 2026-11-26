@@ -11,14 +11,16 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
-// guard keeps other web sites open in a browser on this machine away from the API, which has no login.
+// Guard keeps other web sites open in a browser on this machine away from the API, which has no login.
 //   - The Host header must be an IP literal or localhost. A DNS-rebound attacker host name is refused,
 //     so a page from that name cannot read the responses.
 //   - A state-changing request must come from the same origin (Sec-Fetch-Site, or Origin when that is absent).
 //     Requests with neither header (curl, scripts) pass.
 //   - A request with a body must be application/json, which a cross-site form or text/plain fetch cannot send
 //     without a preflight.
-func guard(next echo.HandlerFunc) echo.HandlerFunc {
+//
+// Register applies Guard to every /api/v1 route. Routes added under /api/v1 outside Register must use it too.
+func Guard(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		r := c.Request()
 		if !localHost(r.Host) {
