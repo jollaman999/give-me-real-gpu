@@ -5,16 +5,24 @@
 실제 GPU 서버 없이 GPU 모니터링 화면을 채워 주는 에뮬레이터입니다.
 
 OpenStack 을 연동하는 관리 플랫폼과 GPU 모니터링 서버를 함께 개발하거나 테스트할 때,
-실제 GPU 노드와 수집 에이전트(telegraf) 대신 이 프로그램 하나를 띄우면 됩니다. 에뮬레이트하는 것은 두 가지입니다.
+실제 GPU 노드와 수집 에이전트 대신 이 프로그램 하나를 띄우면 됩니다. 에뮬레이트하는 것은 두 가지입니다.
 
 - **가짜 OpenStack API** - keystone, nova 등이 포트 하나(기본 15000)에서 경로로 나뉘어 응답합니다.
   관리 플랫폼은 이를 실제 OpenStack 으로 보고 hypervisor, VM, flavor 를 동기화합니다.
-- **메트릭 쓰기** - 같은 토폴로지로 만든 GPU 메트릭(`dcgm`, `gpu_vm_mapping`)과 시스템 메트릭(cpu, mem, disk, net 등)을
-  수집 에이전트가 쓰는 것과 같은 모양의 line protocol 로 InfluxDB v1 에 주기적으로(기본 10초마다)
-  씁니다.
+- **메트릭 쓰기** - 같은 토폴로지로 만든 GPU 메트릭과 시스템 메트릭을 두 종류의 sink 하나 이상에 주기적으로(기본
+  10초마다) 씁니다.
+  - `influxdb`: telegraf 수집 에이전트가 쓰는 것과 같은 모양의 InfluxDB v1 line protocol
+    (`dcgm`, `gpu_vm_mapping`, cpu, mem, disk, net 등).
+  - `otlp`: OpenTelemetry 기반 수집 에이전트가 보내는 것과 같은 모양의 OTLP/HTTP 메트릭
+    (hostmetrics 의 `system.*`·`process.*`, `nvidia_smi.*`, `nvml.gpm.*`, `nvidia_kmsg.xid.errors`).
+    VictoriaMetrics, Prometheus, OpenTelemetry Collector 로 보낼 수 있습니다.
+
+설정, sink, 토폴로지는 데이터 디렉터리의 sqlite 파일에 저장하고 웹 설정 화면에서 고칩니다.
+저장한 변경은 재시작 없이 바로 반영됩니다.
 
 OpenStack API 의 hypervisor hostname·서버 id 와 InfluxDB 의 `host`·`uuid` 태그가 같은 토폴로지에서 나오므로,
-모니터링 서버가 둘을 조인할 수 있습니다. id 는 이름에서 결정적으로 만들어지므로 재시작해도 바뀌지 않습니다.
+모니터링 서버가 둘을 조인할 수 있습니다. OTLP 데이터 포인트에는 그 대신 hypervisor 와 VM 마다 `entity_id` 가 붙습니다.
+id 는 이름에서 결정적으로 만들어지므로 재시작해도 바뀌지 않습니다.
 
 ## 에뮬레이트하는 클라우드 (기본 토폴로지)
 
@@ -35,11 +43,11 @@ passthrough 에서는 GPU 하나를 VM 하나만 쓸 수 있습니다(물리적 
 go run ./cmd/give-me-real-gpu -dump-topology
 ```
 
-다른 구성을 에뮬레이트하려면 토폴로지 파일을 직접 만듭니다([토폴로지 직접 만들기](#토폴로지-직접-만들기) 참고).
+다른 구성을 에뮬레이트하려면 설정 화면에서 토폴로지를 고칩니다([토폴로지 직접 만들기](#토폴로지-직접-만들기) 참고).
 
-## 쓰는 지표
+## InfluxDB 지표
 
-수집 1회(`interval` 마다)에 켜진 sink 마다 line protocol 한 묶음을 만듭니다. 토폴로지의 hypervisor 와 VM 하나하나가
+수집 1회(`interval` 마다)에 켜진 `influxdb` sink 마다 line protocol 한 묶음을 만듭니다. 토폴로지의 hypervisor 와 VM 하나하나가
 수집 에이전트 하나 역할을 하며, 자기 행에 아래 전역 태그를 붙입니다.
 
 | 태그 | hypervisor 에이전트 | VM 에이전트 |
@@ -85,7 +93,7 @@ hypervisor 의 `gpu_type` 은 모니터링 서버가 `nvidia-smi -q -x` 로 판�
 
 기본 토폴로지(hypervisor 6대와 VM 45대, 에이전트 51개)에서 수집 1회는 2032줄이고, 60초 경계에서는 2378줄,
 5분 경계에서는 2416줄이며 여기에 XID 행이 더해집니다. 그중 1600줄 가량이 `cpu` 행입니다.
-값은 시드를 준 랜덤 워크입니다(sink 마다 `seed + sinks 안의 순번`, 개체마다 따로 난수원을 씁니다). GPU 부하가
+값은 시드를 준 랜덤 워크입니다(sink 마다 `seed + sink id`, 개체마다 따로 난수원을 씁니다). GPU 부하가
 온도·전력·클럭과 VM 의 cpu 부하를 끌고 가며, 누적 카운터(`diskio`, `net` 의 bytes·packets, `uptime`)는 늘기만 합니다.
 XID 행은 GPU VM 마다 수집 1회당 확률 `xid_rate` 로 나오고, 코드는 13, 31, 43, 48, 63, 79, 94, 119 중 하나입니다.
 
@@ -95,162 +103,372 @@ XID 행은 GPU VM 마다 수집 1회당 확률 `xid_rate` 로 나오고, 코드�
 - XID 행에는 전역 태그도 `server_time`·`time_diff` 도 없습니다. 에이전트의 xid processor 가 새 metric 을 만들기 때문입니다.
 - 할당된 instance 가 하나라도 있는 MIG GPU 는 통째로 할당된 것으로 보므로, 그 GPU 의 쓰지 않는 instance 에는 `unassigned` 행이 없습니다.
 
+## OTLP 지표
+
+수집 1회에 켜진 `otlp` sink 마다 OTLP export 요청 하나를 만듭니다. 토폴로지의 hypervisor 와 VM 하나하나가
+hostmetrics receiver 와 NVIDIA GPU receiver(nvidia-smi, 커널 로그, NVML GPM)를 돌리는 OpenTelemetry 기반 수집
+에이전트 하나 역할을 합니다. 모든 데이터 포인트에 노드를 가리키는 속성 하나가 붙습니다.
+
+| 속성 | 값 |
+|------|-----|
+| `entity_id` | 모니터링 서버에서 노드를 가리키는 키. 기본값은 hypervisor hostname 이나 VM 이름에서 만든 UUID 라 재시작해도 같습니다. hypervisor 나 VM 에 `entity_id` 를 적으면 그 값을 씁니다([Entity ID](#entity-id) 참고) |
+
+에이전트의 호스트 지표는 resource 속성이 없는 resource 하나입니다. process scraper 가 남기는 프로세스
+(CPU 를 가장 많이 쓰는 10개와 메모리를 가장 많이 쓰는 10개)는 저마다 resource 하나이고 `process.pid`,
+`process.parent_pid`, `process.executable.name`, `process.executable.path`, `process.command`,
+`process.command_line`, `process.owner` 를 가지며, 그 포인트에도 `process.executable.name` 과 `process.pid` 가 붙습니다.
+
+종류 칸의 gauge 는 gauge, sum 은 오르내리는 누적 sum, counter 는 노드 부팅(프로세스는 프로세스 시작) 시각부터
+세는 단조 증가 누적 sum 입니다.
+"저장 이름" 은 저장소가 Prometheus 식으로 이름을 바꾼 뒤의 예입니다(VictoriaMetrics 의
+`-opentelemetry.usePrometheusNaming`). 점은 밑줄이 되고, 단위가 붙고(`s` seconds, `By` bytes, `MiBy` mebibytes,
+`%` percent, `Cel` celsius, `W` watts, gauge 의 `1` 은 ratio, `{...}` 는 아무것도 안 붙음), counter 는 `_total` 로 끝납니다.
+
+| 지표 | 종류, 단위 | `entity_id` 외 속성 | 보내는 쪽 | 저장 이름 |
+|------|------------|---------------------|-----------|-----------|
+| `system.cpu.time` | counter, `s` | `cpu` (`cpu0`, `cpu1`, ...), `state` (`user`, `system`, `idle`, `interrupt`, `nice`, `softirq`, `steal`, `wait`) | 모든 에이전트 | `system_cpu_time_seconds_total` |
+| `system.cpu.logical.count`, `system.cpu.physical.count` | sum, `{cpu}` | - | 모든 에이전트 | `system_cpu_logical_count` |
+| `system.cpu.load_average.1m`, `.5m`, `.15m` | gauge, `{thread}` | - | 모든 에이전트 | `system_cpu_load_average_1m` |
+| `system.memory.usage` | sum, `By` | `state` (`buffered`, `cached`, `inactive`, `free`, `slab_reclaimable`, `slab_unreclaimable`, `used`) | 모든 에이전트 | `system_memory_usage_bytes` |
+| `system.memory.utilization` | gauge, `1` | `state` | 모든 에이전트 | `system_memory_utilization_ratio` |
+| `system.memory.limit`, `system.linux.memory.available`, `system.memory.linux.shared` | sum, `By` | - | 모든 에이전트 | `system_memory_limit_bytes` |
+| `system.paging.usage` | sum, `By` | `device`, `state` (`used`, `free`, `cached`) | hypervisor (VM 에는 swap 이 없음) | `system_paging_usage_bytes` |
+| `system.paging.operations` | counter, `{operations}` | `direction` (`page_in`, `page_out`), `type` (`major`, `minor`) | 모든 에이전트 | `system_paging_operations_total` |
+| `system.paging.faults` | counter, `{faults}` | `type` | 모든 에이전트 | `system_paging_faults_total` |
+| `system.disk.io` | counter, `By` | `device`, `direction` (`read`, `write`) | 모든 에이전트 | `system_disk_io_bytes_total` |
+| `system.disk.operations`, `system.disk.merged` | counter, `{operations}` | `device`, `direction` | 모든 에이전트 | `system_disk_operations_total` |
+| `system.disk.operation_time` | counter, `s` | `device`, `direction` | 모든 에이전트 | `system_disk_operation_time_seconds_total` |
+| `system.disk.io_time`, `system.disk.weighted_io_time` | counter, `s` | `device` | 모든 에이전트 | `system_disk_io_time_seconds_total` |
+| `system.disk.pending_operations` | sum, `{operations}` | `device` | 모든 에이전트 | `system_disk_pending_operations` |
+| `system.filesystem.usage` | sum, `By` | `device`, `mode`, `mountpoint`, `type`, `state` (`free`, `reserved`, `used`) | 모든 에이전트 | `system_filesystem_usage_bytes` |
+| `system.filesystem.inodes.usage` | sum, `{inodes}` | 위와 같음, `state` (`free`, `used`) | 모든 에이전트 | `system_filesystem_inodes_usage` |
+| `system.network.io` | counter, `By` | `device`, `direction` (`receive`, `transmit`) | 모든 에이전트 | `system_network_io_bytes_total` |
+| `system.network.packets`, `.errors`, `.dropped` | counter | `device`, `direction` | 모든 에이전트 | `system_network_packets_total` |
+| `system.network.connections` | sum, `{connections}` | `protocol=tcp`, `state` (`ESTABLISHED`, `LISTEN`, `TIME_WAIT`, ...) | 모든 에이전트 | `system_network_connections` |
+| `system.processes.count` | sum, `{processes}` | `status` (`blocked`, `idle`, `running`, `sleeping`) | 모든 에이전트 | `system_processes_count` |
+| `system.processes.created` | counter, `{processes}` | - | 모든 에이전트 | `system_processes_created_total` |
+| `system.uptime` | gauge, `s` | - | 모든 에이전트 | `system_uptime_seconds` |
+| `process.cpu.time` | counter, `s` | `state` (`user`, `system`, `wait`) | 모든 에이전트, 남긴 프로세스마다 | `process_cpu_time_seconds_total` |
+| `process.cpu.utilization` | gauge, `1` | `state` | 모든 에이전트, 남긴 프로세스마다 | `process_cpu_utilization_ratio` |
+| `process.memory.usage`, `process.memory.virtual` | sum, `By` | - | 모든 에이전트, 남긴 프로세스마다 | `process_memory_usage_bytes` |
+| `process.memory.utilization` | gauge, `1` (hostmetrics 가 보고하는 대로 백분율 값) | - | 모든 에이전트, 남긴 프로세스마다 | `process_memory_utilization_ratio` |
+| `process.disk.io` | counter, `By` | `direction` | 모든 에이전트, 남긴 프로세스마다 | `process_disk_io_bytes_total` |
+| `nvidia_smi.utilization.gpu`, `.memory`, `.encoder`, `.decoder` | gauge, `%` | `index`, `uuid`, `name` | 에이전트가 보는 모든 GPU. 단 MIG 를 켠 GPU 와 MIG 기반 vGPU 는 제외 | `nvidia_smi_utilization_gpu_percent` |
+| `nvidia_smi.memory.total`, `.used`, `.free` | gauge, `MiBy` | `index`, `uuid`, `name` | 에이전트가 보는 모든 GPU | `nvidia_smi_memory_used_mebibytes` |
+| `nvidia_smi.clocks.sm`, `nvidia_smi.clocks.mem` | gauge, `MHz` | `index`, `uuid`, `name` | 에이전트가 보는 모든 GPU | `nvidia_smi_clocks_sm_MHz` |
+| `nvidia_smi.pstate` | gauge | `index`, `uuid`, `name` | 에이전트가 보는 모든 GPU | `nvidia_smi_pstate` |
+| `nvidia_smi.temperature.gpu`, `nvidia_smi.power.draw` | gauge, `Cel` 과 `W` | `index`, `uuid`, `name` | 보드 주인: hypervisor 와 passthrough 게스트 | `nvidia_smi_temperature_gpu_celsius`, `nvidia_smi_power_draw_watts` |
+| `nvidia_smi.temperature.memory` | gauge, `Cel` | `index`, `uuid`, `name` | 보드 주인, HBM 보드(A100, H100, H200) | `nvidia_smi_temperature_memory_celsius` |
+| `nvidia_smi.fan.speed` | gauge, `%` | `index`, `uuid`, `name` | 보드 주인, 팬이 달린 보드(RTX, Quadro, GeForce). 기본 토폴로지에는 없음 | `nvidia_smi_fan_speed_percent` |
+| `nvidia_smi.clocks_event_reasons.active`, `nvidia_smi.ecc.errors.corrected.volatile.total` 과 나머지 `ecc.errors.*` 세 개 | gauge | `index`, `uuid`, `name` | 보드 주인 | `nvidia_smi_ecc_errors_corrected_volatile_total` |
+| `nvidia_smi.retired_pages.double_bit.count`, `.pending` | gauge | `index`, `uuid`, `name` | 보드 주인, Turing·Volta·Pascal | `nvidia_smi_retired_pages_pending` |
+| `nvidia_smi.remapped_rows.correctable`, `.uncorrectable`, `.pending`, `.failure` | gauge | `index`, `uuid`, `name` | 보드 주인, 그 밖의 아키텍처 | `nvidia_smi_remapped_rows_pending` |
+| `nvml.gpm.sm.utilization`, `.sm.occupancy`, `.graphics.utilization`, `.dram.bandwidth.utilization`, `.fp16.utilization`, `.fp32.utilization`, `.fp64.utilization` | gauge, `%` | `index`, `uuid`, `name`. MIG 인스턴스는 `mig=true`, `gpu_instance_id`, `mig.uuid` 가 더 붙음 | Hopper 이후만: hypervisor(장치와 MIG 인스턴스마다), passthrough 게스트(장치), MIG 게스트(자기 인스턴스를 `gpu_instance_id=0` 으로) | `nvml_gpm_sm_utilization_percent` |
+| `nvidia_kmsg.xid.errors` | counter, `{error}` | `uuid` (물리 GPU), `xid` | 그 XID 를 로그에 남기는 커널: vGPU·MIG VM 은 hypervisor, passthrough VM 은 게스트. 첫 XID 뒤부터 나옴 | `nvidia_kmsg_xid_errors_total` |
+
+에이전트가 nvidia-smi 로 보는 GPU 는 이렇습니다.
+
+- VGPU·MIG hypervisor: 모든 물리 GPU. `GPU-...` uuid 와 모델 이름으로 보입니다.
+- passthrough hypervisor: 없음. 호스트에 NVIDIA 드라이버가 없기 때문입니다(`driver_version` 이 비어 있음).
+  드라이버 버전을 적으면 VM 이 쓰지 않는 GPU 가 보입니다.
+- vGPU VM: `index=0` 인 GPU 하나. uuid 는 `GPU-<vgpu_uuid>`, `name` 은 vGPU 타입, 메모리는 vGPU 프레임버퍼입니다.
+  게스트는 보드를 갖지 않으므로 온도, 전력, ECC, row remapping 이 없습니다.
+- MIG VM: vGPU VM 과 같되 `utilization.*` 이 없습니다.
+- passthrough VM: 물리 GPU 를 보드 필드까지 모두 봅니다.
+- `guest_driver_version` 이 없는 VM 은 GPU 를 보지 못합니다.
+
+기본 토폴로지에서 수집 1회는 데이터 포인트 2만 4천 개 가량이고 그 절반이 `system.cpu.time` 입니다.
+값도 시드를 준 랜덤 워크이고(sink 마다 `seed + sink id`), XID 는 같은 `xid_rate` 와 코드를 씁니다.
+`-once` 는 지표 이름별 데이터 포인트 수를 출력합니다([명령줄](#명령줄) 참고).
+
 ## 빠른 시작
 
-1. 설정 파일을 만듭니다.
-
-   ```sh
-   cp config.example.json config.json
-   chmod 644 config.json
-   ```
-
-   - `advertise_host` 에는 관리 플랫폼이 접근할 수 있는 이 머신의 주소를 넣습니다(예시의 `192.0.2.10` 은 문서용 주소입니다).
-   - `openstack.password` 를 바꿉니다. 이 값은 관리 플랫폼에 credential 을 등록할 때 입력합니다.
-   - sink 는 일단 `enabled: false` 로 둡니다. 이 상태에서는 가짜 OpenStack API 만 동작하고 InfluxDB 에는 아무것도 쓰지 않습니다.
-
-   컨테이너는 nonroot(uid 65532)로 실행되므로 권한이 600 인 `config.json` 은 읽지 못합니다(`permission denied`).
-   644 파일에 비밀번호를 두고 싶지 않다면 비밀값은 비워 두고 `emulator.env` 에 환경 변수로 넣습니다([환경 변수](#환경-변수) 참고).
-   compose 를 쓰면 repo 루트에 `emulator.env` 를 만들고 `=` 뒤에 비밀번호를 채웁니다. 이 값이 `openstack.password` 를 덮어씁니다.
-
-   ```sh
-   # emulator.env (fill in the value after "=")
-   EMU_OS_PASSWORD=
-   ```
-
-2. 실행합니다.
+1. 실행합니다.
 
    ```sh
    docker compose up -d --build     # or: make up
    docker compose logs emulator
    ```
 
-3. 시작 로그에서 등록할 값을 확인합니다.
+   처음 시작하면 `data` 볼륨에 설정 DB 를 만들고, 설정을 마칠 주소를 로그에 남깁니다.
+   설정을 마치기 전까지 가짜 OpenStack API 는 모든 요청에 503 으로 답합니다.
 
    ```
-   level=INFO msg="OpenStack credential to register in the management platform (password is openstack.password from the config)" url=http://192.0.2.10:15000/v3 user=emu-admin project_id=f2aeea254abf2861de80ddccb3cc7225 project_name=emu-gpu domain_id=default region=RegionOne
+   level=WARN msg="open the settings UI to finish setup" url=http://127.0.0.1:15080/ui/ reason="set advertise_host and the OpenStack password in the settings UI"
    ```
 
-4. 관리 플랫폼에 아래 값으로 OpenStack credential 을 등록합니다.
+2. 에뮬레이터를 띄운 머신의 브라우저에서 `http://localhost:15080/` 을 엽니다. 설정 화면에는 로그인이 없어서
+   compose 는 설정 포트를 `127.0.0.1` 에만 엽니다. 다른 PC 에서는 SSH 로 포트를 넘겨 받은 뒤 같은 주소를 엽니다.
+
+   ```sh
+   ssh -L 15080:localhost:15080 <host>
+   ```
+
+3. **일반** 탭에서 **공개 호스트 (advertise host)** 에 관리 플랫폼이 접근할 수 있는 이 머신의 주소(예: 문서용 주소 `192.0.2.10`)를
+   넣고 **OpenStack 비밀번호** 를 정한 뒤 저장합니다. 가짜 OpenStack API 가 바로 응답하기 시작합니다.
+
+4. **상태** 탭에 나오는 값으로 관리 플랫폼에 OpenStack credential 을 등록합니다. 같은 값이 로그의
+   `fake OpenStack API ready; register this credential in the management platform` 줄에도 있습니다.
 
    | 항목 | 값 |
    |------|-----|
-   | 인증 URL | `http://<advertise_host>:<listen 포트>/v3` (예: `http://192.0.2.10:15000/v3`) |
+   | 인증 URL | `http://<advertise host>:<listen 포트>/v3` (예: `http://192.0.2.10:15000/v3`) |
    | 도메인 ID | `default` |
    | 사용자 | `emu-admin` |
-   | 비밀번호 | `openstack.password`, 또는 설정돼 있으면 `EMU_OS_PASSWORD` (compose 를 쓰면 `emulator.env` 의 `EMU_OS_PASSWORD=` 뒤 값) |
+   | 비밀번호 | 일반 탭에 저장한 OpenStack 비밀번호 |
    | 프로젝트 ID | `f2aeea254abf2861de80ddccb3cc7225` |
    | 프로젝트 이름 | `emu-gpu` |
    | 리전 | `RegionOne` |
 
    도메인·사용자·프로젝트·리전은 기본 토폴로지의 고정값이라(프로젝트 id 는 프로젝트 이름에서 계산합니다) 재시작해도 같습니다.
-   `topology_file` 을 쓰면 그 파일에 적힌 값이 쓰이므로 시작 로그에서 확인합니다.
+   토폴로지에서 바꿨다면 상태 탭에서 확인합니다.
    관리 플랫폼이 동기화를 마치면 위 표의 hypervisor 와 VM 이 보여야 합니다.
 
-5. 관리 플랫폼이 돌려준 credential id 를 sink 의 `credential_id` 에 넣고, InfluxDB 계정
-   (`username`, `password`)을 채운 뒤 `enabled: true` 로 바꿉니다. sink 로는 모니터링 서버가 읽는 InfluxDB 를 씁니다.
+5. **Sink** 탭에서 sink 를 추가하고 켭니다.
+   - `influxdb`: 모니터링 서버가 읽는 InfluxDB. 4단계에서 관리 플랫폼이 돌려준 credential id 를 **Credential ID** 에
+     넣습니다([InfluxDB sink](#influxdb-sink) 참고).
+   - `otlp`: VictoriaMetrics, Prometheus 같은 OTLP/HTTP 엔드포인트([OTLP sink](#otlp-sink) 참고).
 
-6. 다시 시작합니다.
+   저장한 sink 는 다음 주기부터 씁니다.
 
-   ```sh
-   docker compose up -d --force-recreate emulator
-   docker compose logs -f emulator    # "InfluxDB write" sink=... lines=... appears every interval
+6. **상태** 탭을 봅니다. sink 마다 마지막 쓰기 시각, 줄 수 또는 데이터 포인트 수, 걸린 시간, 마지막 에러가 나옵니다.
+   로그에는 쓸 때마다 한 줄이 남습니다.
+
+   ```
+   level=INFO msg="sink write" sink=site-a type=influxdb lines=2032 elapsed=15ms
+   level=INFO msg="sink write" sink=site-b type=otlp lines=24303 elapsed=89ms
    ```
 
-실제로 쓰기 전에 무엇이 나가는지 보려면 `-once` 를 씁니다. 메트릭을 한 번 만들어 stdout 으로 출력합니다(InfluxDB 에는 쓰지 않습니다).
-`dry_run: true` 로 두면 루프는 계속 돌고 줄 수만 로그로 남깁니다.
+실제로 쓰기 전에 무엇이 나가는지 보려면 일반 탭의 **드라이런** 을 켭니다. 루프는 계속 돌고 줄 수만 로그로 남깁니다.
+또는 `-once` 를 씁니다. 저장된 설정으로 켜진 sink 마다 메트릭을 한 번 만들어 stdout 으로 출력합니다.
+서비스 이름 뒤에 준 인자는 이미지의 `-data /data` 를 대신하므로 다시 넣어 줍니다.
 
 ```sh
-docker compose run --rm -T emulator -once | head
+docker compose run --rm -T emulator -data /data -once | head
 ```
 
-헬스 체크: `curl http://<host>:15000/healthz` 는 `ok` 를 돌려줍니다.
+헬스 체크: `curl http://<host>:15000/healthz` 는 설정을 마치기 전에도 `ok` 를 돌려줍니다.
 
-## 로컬 테스트
-
-실제 InfluxDB 에 쓰기 전에 로컬 InfluxDB(1.11.8)를 상대로 처음부터 끝까지 돌려 볼 수 있습니다.
+Docker 없이 돌릴 때는 데이터 디렉터리를 정해서 실행합니다. 설정 포트는 이 머신에만 엽니다.
 
 ```sh
-docker compose --profile local up -d --build
+go run ./cmd/give-me-real-gpu -data ./data -ui-listen 127.0.0.1:15080
 ```
 
-sink 는 compose 네트워크 안의 서비스 이름을 가리키게 합니다.
+## 이전 버전에서 옮기기
 
-```json
-{"name": "local", "url": "http://influxdb:8086", "db": "telegraf", "credential_id": "<any UUID>", "enabled": true}
-```
+설정 화면이 생기기 전 버전은 `config.json`, `EMU_*` 환경 변수, `-config` 플래그를 읽었습니다.
+지금은 이 중 아무것도 읽지 않고 가져오지도 않으므로, 업그레이드한 뒤 설정 화면에서 값을 다시 넣습니다.
+sink 를 다시 넣기 전까지는 메트릭을 쓰지 않습니다.
 
-호스트에서는 18086 포트로 조회합니다.
+| 이전 | 지금 |
+|------|------|
+| `advertise_host`, `openstack.password`, `openstack.token_ttl`, `interval`, `seed`, `xid_rate`, `dry_run` | 일반 탭 |
+| `sinks[]` | Sink 탭, 종류 `influxdb`. 비밀번호도 다시 입력합니다 |
+| `topology_file` | 토폴로지 탭의 JSON 보기: 파일 내용을 붙여 넣고 적용한 뒤 저장 |
+| `listen` | `-listen` 플래그 |
+| `EMU_*` 환경 변수 | 지원하지 않습니다. 설정 화면에서 넣습니다 |
+
+sink 별 시드는 `seed + 순번` 에서 `seed + sink id` 로 바뀌었으므로 `seed` 가 같아도 값은 예전과 다릅니다.
+compose 는 더 이상 `config.json` 을 마운트하거나 `emulator.env` 를 읽지 않습니다. 비밀번호가 들어 있으니 옮긴 뒤 지웁니다.
+
+## 설정 화면
+
+설정 화면은 `-ui-listen`(기본 `:15080`)의 `/ui/` 에서 열립니다. 영어와 한국어를 지원하며, 처음에는 브라우저 언어를
+따르고 고른 언어는 기억합니다.
+
+| 탭 | 하는 일 |
+|-----|---------|
+| 상태 | 가짜 OpenStack API 가 준비됐는지와 아니면 그 이유, 관리 플랫폼에 등록할 값, sink 마다 마지막 쓰기 시각·줄 수 또는 데이터 포인트 수·걸린 시간·마지막 에러 |
+| 일반 | 아래 설정 |
+| Sink | sink 추가, 수정, 켜기, 삭제 |
+| 토폴로지 | 토폴로지 편집기([토폴로지 직접 만들기](#토폴로지-직접-만들기) 참고) |
+
+저장하면 바로 반영됩니다. 가짜 OpenStack API 는 쓰는 값이 바뀔 때만 다시 만들고(그 밖의 변경에서는 발급한 토큰이
+그대로 유효합니다), sink 의 쓰기 루프는 그 sink 가 쓰는 것이 바뀔 때만 다시 시작합니다: sink 자신, 토폴로지, `interval`, `seed`,
+`xid_rate`, `dry_run`. 재시작이 필요한 것은 두 listen 주소뿐입니다.
+
+### 일반 설정
+
+| 설정 (API 키) | 기본값 | 의미 |
+|---------------|--------|------|
+| 공개 호스트 (`advertise_host`) | 비어 있음 | keystone catalog URL 의 호스트. 관리 플랫폼이 접근할 수 있는 주소. 비어 있는 동안 가짜 OpenStack API 는 503 으로 답합니다 |
+| OpenStack 비밀번호 (`openstack_password`) | 비어 있음 | 가짜 keystone 비밀번호. 비어 있는 동안 가짜 OpenStack API 는 503 으로 답합니다. 사용자와 프로젝트 이름은 토폴로지에서 가져옵니다 |
+| 토큰 유효 시간 (`token_ttl`) | `1h` | 발급한 토큰의 유효 기간 |
+| 쓰기 주기 (`interval`) | `10s` | 메트릭을 만들어 쓰는 주기. 최소 1s |
+| 시드 (`seed`) | `1` | 메트릭 값의 난수 시드. sink 마다 `seed + sink id` 를 씁니다 |
+| XID 에러 비율 (`xid_rate`) | `0.002` | 한 주기에 GPU VM 하나가 XID 이벤트를 낼 확률 (0~1) |
+| 드라이런 (`dry_run`) | 꺼짐 | 메트릭을 만들어 개수만 로그로 남기고 어느 sink 에도 쓰지 않습니다 |
+
+기간 값은 `"10s"`, `"1h"` 같은 문자열입니다.
+
+### 설정 API
+
+설정 화면은 같은 포트의 `/api/v1` 아래 JSON API 를 씁니다. 이 머신에서 스크립트로도 부를 수 있습니다.
 
 ```sh
-curl -sG http://localhost:18086/query --data-urlencode db=telegraf --data-urlencode 'q=SHOW MEASUREMENTS'
+curl -s http://localhost:15080/api/v1/status
+curl -s -X PUT http://localhost:15080/api/v1/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"advertise_host": "192.0.2.10", "openstack_password": "<change-me>"}'
 ```
+
+| 메서드와 경로 | 하는 일 |
+|---------------|---------|
+| `GET /api/v1/status` | 상태 탭에 나오는 내용 |
+| `GET`, `PUT /api/v1/settings` | 일반 설정. `PUT` 에서 뺀 키는 값을 그대로 둡니다 |
+| `GET`, `POST /api/v1/sinks`, `PUT`, `DELETE /api/v1/sinks/<id>` | sink. `PUT` 에서 뺀 키는 값을 그대로 둡니다 |
+| `GET`, `PUT /api/v1/topology`, `POST /api/v1/topology/reset` | 저장된 토폴로지. `PUT` 은 빈 칸을 채우지 않고 보낸 그대로 저장합니다 |
+| `POST /api/v1/topology/fill` | 본문의 토폴로지에서 빈 칸을 채우고 문제를 나열합니다. 저장하지 않습니다 |
+| `GET /api/v1/topology/catalog` | 편집기가 내놓는 GPU 모델, 프로필, flavor |
+
+저장이 거부되면 400 과 함께 문제를 모두 돌려줍니다. 예:
+`{"error":"validation failed","problems":["sink \"y\": db is empty"]}`. 알 수 없는 키는 오타로 보고 거부합니다.
+비밀번호와 토큰은 받기만 하고 내보내지 않습니다. 응답에는 `openstack_password_set`, `password_set`, `token_set` 만 있습니다.
+
+로그인이 없으므로, 이 머신의 브라우저에 열린 웹 페이지가 보낼 수 있는 요청은 거부합니다.
+
+- `Host` 헤더가 IP 주소나 `localhost` 가 아니면 403 입니다(DNS rebinding 을 막습니다). 설정 화면은 호스트 이름이 아니라
+  IP 나 `localhost` 로 엽니다.
+- 다른 사이트에서 온 상태 변경 요청(`Sec-Fetch-Site` 또는 `Origin`)은 403 입니다.
+- 본문이 `application/json` 이 아니면 415 입니다.
+
+curl 과 스크립트는 `Origin` 을 보내지 않으므로 통과합니다.
+
+## Sink
+
+sink 하나가 목적지 하나입니다. 켜진 sink 는 수집할 때마다 모두 받습니다.
+
+| 항목 (API 키) | 의미 |
+|---------------|------|
+| 이름 (`name`) | 겹치면 안 됩니다. 로그와 상태 탭에 쓰입니다 |
+| 종류 (`type`) | `influxdb` 또는 `otlp` |
+| URL (`url`) | 호스트가 있는 `http://` 또는 `https://`. `user:password@` 를 넣으면 안 되고 사용자 이름·비밀번호 칸을 씁니다 |
+| 사용자 이름, 비밀번호 (`username`, `password`) | HTTP Basic 인증. 둘 다 비어 있으면 인증 없이 씁니다 |
+| 켜기 (`enabled`) | 켜진 sink 에만 쓰고 그때만 모든 칸을 검사하므로, 꺼진 sink 는 덜 채운 채로 두어도 됩니다 |
+
+비밀번호와 토큰은 DB 파일(권한 0600)에 평문으로 저장하고 API 로 내보내지 않습니다.
+수정할 때 칸을 비워 두면 저장된 값을 그대로 씁니다. **URL 을 바꾸면 저장된 비밀번호와 토큰을 지웁니다.**
+같은 저장에서 새 값을 넣으면 그 값을 씁니다. 옛 계정을 가진 채로 sink 를 다른 서버로 돌릴 수 없게 하려는 것입니다.
+
+### InfluxDB sink
+
+`influxdb` sink 하나가 InfluxDB v1 데이터베이스 하나입니다. 화면에서는 종류를 InfluxDB v1 로 고릅니다. API 로는 이렇습니다.
+
+```sh
+curl -s -X POST http://localhost:15080/api/v1/sinks \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "site-a", "type": "influxdb", "url": "http://192.0.2.30:8086", "db": "telegraf",
+       "username": "<influxdb-user>", "password": "<change-me>",
+       "credential_id": "3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07", "enabled": true}'
+```
+
+| 항목 (API 키) | 어디서 가져오나 |
+|---------------|-----------------|
+| URL (`url`) | 모니터링 서버가 읽는 InfluxDB, 즉 실제 수집 에이전트가 쓰는 곳. `http://` 또는 `https://`, 기본 포트 8086 |
+| 데이터베이스 (`db`) | 그 에이전트가 쓰는 데이터베이스 (telegraf 라면 `[[outputs.influxdb]]` 의 `database`). 켜려면 필요합니다 |
+| 사용자 이름, 비밀번호 | 그 데이터베이스에 쓸 수 있는 계정. 에이전트 계정(telegraf 의 `username`, `password`)을 쓰면 됩니다. 인증이 꺼져 있으면 둘 다 비웁니다 |
+| Credential ID (`credential_id`) | [빠른 시작](#빠른-시작) 4단계에서 등록한 OpenStack credential 에 관리 플랫폼이 붙인 id. UUID 이고 켜려면 필요합니다. `credential_id` 태그 값과 `uuid` 태그의 접두사가 됩니다 |
+
+쓰는 방식입니다.
+
+- `interval` 마다 켜진 sink 하나에 한 묶음씩 `POST <url>/write?db=<db>&precision=ns` 로 보냅니다. gzip 으로 압축하고, 요청 하나에 최대 5000줄입니다.
+- 사용자 이름이나 비밀번호가 있으면 HTTP Basic 인증을 씁니다.
+- 데이터베이스를 만들지 않습니다. 미리 있어야 하고, 계정에 쓰기 권한이 있어야 합니다.
+- 네트워크 에러나 5xx 는 1초 뒤 한 번 더 보냅니다. 400(필드 타입 충돌 등)은 기록하고 나머지 요청은 계속 보냅니다.
+- 성공한 묶음마다 로그에 `msg="sink write" sink=site-a type=influxdb lines=...` 가, 실패하면 에러와 함께 `msg="sink write failed"` 가 남습니다. 마지막 에러는 상태 탭에도 나옵니다.
+
+### OTLP sink
+
+`otlp` sink 는 [OTLP 지표](#otlp-지표)를 OTLP/HTTP 엔드포인트로 보냅니다. URL 에는 엔드포인트 전체를 적습니다.
+
+| 받는 쪽 | URL |
+|---------|-----|
+| VictoriaMetrics (단일 노드) | `http://192.0.2.20:8428/opentelemetry/v1/metrics` |
+| `--web.enable-otlp-receiver` 로 띄운 Prometheus | `http://192.0.2.20:9090/api/v1/otlp/v1/metrics` |
+| OpenTelemetry Collector 의 OTLP receiver (HTTP) | `http://192.0.2.20:4318/v1/metrics` |
+
+```sh
+curl -s -X POST http://localhost:15080/api/v1/sinks \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "site-b", "type": "otlp", "url": "http://192.0.2.20:8428/opentelemetry/v1/metrics", "enabled": true}'
+```
+
+- 인증: **Bearer 토큰** (`token`)이 있으면 Basic 대신 그것을 보내고, 없으면 사용자 이름·비밀번호로 Basic, 다 비어 있으면 보내지 않습니다.
+- 데이터베이스와 Credential ID 는 쓰지 않으며, 둘 중 하나라도 넣은 `otlp` sink 는 저장이 거부됩니다.
+- `interval` 마다 켜진 sink 하나에 protobuf(`application/x-protobuf`)를 gzip 으로 압축해 `POST` 한 번으로 보냅니다.
+- 네트워크 에러나 5xx 는 1초 뒤 한 번 더 보냅니다. 4xx 는 다시 보내지 않고 응답 본문과 함께 기록합니다.
+- 로그와 상태 탭에서 `otlp` sink 의 `lines` 는 데이터 포인트 수입니다.
+
+[OTLP 지표](#otlp-지표)의 저장 이름은 저장소가 Prometheus 식 이름으로 바꾼다고 보고 적은 것입니다. VictoriaMetrics 는
+`-opentelemetry.usePrometheusNaming` 을 주고 띄웁니다. 다른 저장소는 이름을 다르게 만들 수 있으니 저장된 이름을 저장소에서 확인합니다.
 
 ## 토폴로지 직접 만들기
 
-기본 6노드는 코드 안에서 만들어집니다. 다른 클라우드를 에뮬레이트하려면 JSON 파일로 적고 `topology_file` 에 지정합니다.
-토폴로지 파일은 적힌 그대로 씁니다. 에뮬레이터가 id, 주소, 이름을 대신 만들어 주지 않습니다.
+토폴로지(노드, GPU, VM, flavor, 프로젝트, 사용자)는 DB 에 저장됩니다. 처음 시작할 때 기본 6노드를 저장합니다.
+설정 화면의 **토폴로지** 탭에서 고치며, 저장하면 가짜 OpenStack API 와 모든 sink 에 바로 반영됩니다.
 
-1. 기본 토폴로지에서 시작합니다.
+탭에는 **편집기**, **JSON**, **Entity ID** 세 가지 보기가 있습니다.
 
-   ```sh
-   go run ./cmd/give-me-real-gpu -dump-topology > topology.json
-   # Go 가 없으면 docker compose 가 빌드한 이미지로
-   docker run --rm give-me-real-gpu:dev -dump-topology > topology.json
-   ```
+### 편집기
 
-2. 고칩니다. 필요 없는 노드, GPU, VM 을 지우거나, 하나를 복사해 새 이름과 새 id 를 붙입니다
-   (`uuidgen` 으로 새 UUID 를 얻을 수 있습니다). 아래 [규칙](#시작할-때-검사하는-규칙)을 지킵니다.
+- 팔레트에서 노드(vGPU, MIG, Passthrough)는 캔버스에, GPU 모델은 노드에, VM 은 GPU 에 끌어다 놓습니다.
+  MIG GPU 에서는 VM 을 GPU 인스턴스 칸에 놓거나, 빈 칸에 놓아 그 VM 이 쓸 인스턴스를 만듭니다.
+- VM 을 다른 GPU 로 끌면 옮겨집니다. 노드, GPU, VM 을 팔레트의 삭제 칸에 놓으면 지워집니다.
+- 규칙을 어기는 자리에는 놓이지 않고 이유가 그 자리에 나옵니다: passthrough GPU 에는 VM 하나, vGPU GPU 에는 프로필의
+  최대 수까지, MIG GPU 는 slice 7개까지, GPU 모델은 지원하는 모드의 노드에만 들어갑니다.
+- 노드, GPU, VM 을 누르면 **속성** 에서 고칩니다: 이름, 크기, IP, flavor, vGPU 프로필, MIG 인스턴스, `entity_id`.
+  노드의 모드는 만들 때 정해집니다.
+- 비워 둔 id, uuid, 주소, bus id, 드라이버 버전, flavor 는 기본 토폴로지와 같은 결정적 규칙으로 채웁니다
+  (hypervisor IP 는 `192.0.2.0/24`, VM IP 는 `198.51.100.0/24` 와 `203.0.113.0/24` 에서). 직접 넣은 값은 그대로 둡니다.
+- 문제는 해당 노드, GPU, VM 옆에 나옵니다. 문제가 있으면 **저장** 이 거부됩니다.
+  **되돌리기** 는 저장된 토폴로지를 다시 불러오고, **기본값으로** 는 저장된 토폴로지를 기본 6노드로 바꿔 바로 저장합니다.
 
-3. 파일을 컨테이너에 마운트합니다. compose 는 `config.json` 만 마운트하므로 `compose.yaml` 에 bind 마운트를 하나 더 넣습니다.
-   넣지 않으면 `open topology file: ... no such file or directory` 로 멈춥니다.
+편집기가 내놓는 GPU 모델과 들어갈 수 있는 모드입니다.
 
-   ```yaml
-   services:
-     emulator:
-       volumes:
-         - type: bind
-           source: ./config.json
-           target: /etc/give-me-real-gpu/config.json
-           read_only: true
-           bind:
-             create_host_path: false
-         - type: bind
-           source: ./topology.json
-           target: /etc/give-me-real-gpu/topology.json
-           read_only: true
-           bind:
-             create_host_path: false
-   ```
+| GPU 모델 | 모드 | vGPU 프로필 | MIG 프로필 |
+|----------|------|-------------|------------|
+| NVIDIA A10 | VGPU, PASSTHROUGH | NVIDIA A10-4Q | - |
+| Tesla T4 | VGPU, PASSTHROUGH | GRID T4-4Q | - |
+| NVIDIA A100-SXM4-80GB | MIG, PASSTHROUGH | - | 1g.10gb, 2g.20gb, 3g.40gb, 7g.80gb |
+| NVIDIA H100 80GB HBM3 | MIG, PASSTHROUGH | - | 1g.10gb, 3g.40gb |
+| NVIDIA L40S | PASSTHROUGH | - | - |
+| NVIDIA A100-PCIE-40GB | PASSTHROUGH | - | - |
 
-   설정에는 컨테이너 안의 경로를 적고, nonroot 사용자(uid 65532)가 읽을 수 있게 권한을 줍니다.
+### JSON 보기
 
-   ```json
-   "topology_file": "/etc/give-me-real-gpu/topology.json"
-   ```
+JSON 보기는 토폴로지 전체를 아래 [키](#키) 형식으로 보여 줍니다. 고치거나 붙여 넣고 **적용** 을 누르면
+편집기와 같은 방식으로 빈 칸을 채우고 문제를 나열합니다. 그다음 **저장** 합니다.
+기본 토폴로지를 파일로 받아 시작하려면 다음을 실행합니다.
 
-   ```sh
-   chmod 644 topology.json
-   ```
+```sh
+go run ./cmd/give-me-real-gpu -dump-topology > topology.json
+# Go 가 없으면 docker compose 가 빌드한 이미지로
+docker run --rm give-me-real-gpu:dev -dump-topology > topology.json
+```
 
-   컨테이너 없이 돌릴 때는 `topology_file` 이 보통 경로입니다. 상대 경로는 설정 파일 위치가 아니라 작업 디렉터리 기준입니다.
+처음에는 이름만 있어도 됩니다. 아래는 vGPU 노드 하나에 A10 한 장, VM 하나입니다.
 
-4. 다시 시작하고 첫 로그 줄의 개수를 확인합니다.
+```json
+{
+  "hypervisors": [
+    {
+      "hostname": "emu-vgpu-01",
+      "mode": "VGPU",
+      "gpus": [
+        {"index": 0, "model_name": "NVIDIA A10", "vms": [{"name": "emu-vgpu01-g0-1", "mig_gpu_instance_id": -1}]}
+      ]
+    }
+  ]
+}
+```
 
-   ```sh
-   docker compose up -d --force-recreate emulator
-   docker compose logs emulator | head -2
-   # level=INFO msg="give-me-real-gpu starting" ... hypervisors=1 vms=1
-   ```
-
-   규칙을 어긴 파일이면 시작하지 않고, 찾은 문제를 전부 에러에 나열합니다. 예를 들면 이렇습니다.
-
-   ```
-   level=ERROR msg="failed to load the topology" err="validate topology file /etc/give-me-real-gpu/topology.json: hypervisor emu-pt-01 gpu 0: passthrough GPU has 2 VMs (max 1)\nvm emu-pt01-g1-1: gpu_index 1 does not match the GPU it is attached to, 0 ..."
-   ```
+VM 마다 `"mig_gpu_instance_id": -1` 을 적습니다. 0 도 올바른 MIG GPU 인스턴스 id 이므로 키를 빼면 빈 값으로 보지 않습니다.
+MIG 노드에서 -1 이면 비어 있는 첫 인스턴스를 고릅니다. GPU `index` 도 0 이 올바른 값이라 채우지 않습니다.
 
 ### 가장 작은 토폴로지
 
-vGPU 노드 하나에 A10 한 장, VM 하나입니다. 값은 모두 기본 토폴로지에서 가져왔습니다.
+위 예를 적용하면 아래처럼 됩니다. 값은 모두 기본 토폴로지와 같습니다.
 
 ```json
 {
@@ -336,6 +554,14 @@ MIG GPU 는 `profile` 대신 `mig_instances` 를 두고, 그 GPU 의 VM 은 자�
 passthrough GPU 는 둘 다 없습니다. 그 VM 에는 `vgpu_uuid` 가 없고 `mig_gpu_instance_id` 는 `-1` 입니다.
 passthrough 노드는 호스트에 NVIDIA 드라이버가 없으므로 `driver_version` 과 `cuda_version` 을 비워 둡니다.
 
+### Entity ID
+
+Entity ID 보기는 hypervisor 와 VM 마다 [OTLP 지표](#otlp-지표)에 붙는 `entity_id` 를 기본값인지 직접 정한 값인지와 함께
+보여 주고, 한 번에 모두 복사합니다. 에뮬레이터는 노드를 모니터링 서버에 등록하지 않으므로 등록할 때 이 목록을 씁니다.
+
+`entity_id` 가 비어 있으면 hostname 이나 VM 이름에서 만든 UUID 를 쓰므로 이름을 바꾸면 값도 바뀝니다. 고정하려면
+속성의 **OTel entity_id** 나 JSON 보기에서 hypervisor·VM 의 `entity_id` 에 값을 넣습니다.
+
 ### 키
 
 | 위치 | 키 | 의미 |
@@ -365,8 +591,11 @@ passthrough 노드는 호스트에 NVIDIA 드라이버가 없으므로 `driver_v
 | `vms[]` | `guest_bdf`, `guest_driver_version` | VM 안에서 보이는 PCI 주소와 NVIDIA 드라이버 |
 | `vms[]` | `vcpus`, `memory_mb`, `disk_gb` | VM 크기 |
 | `flavors[]` | `id`, `name`, `vcpus`, `ram_mb`, `disk_gb`, `extra_specs` | nova flavor. GPU flavor 는 `extra_specs` 에 `resources:VGPU` 나 `pci_passthrough:alias` 가 있습니다 |
+| `hypervisors[]`, `vms[]` | `entity_id` | OTLP 지표에 붙는 노드의 `entity_id`. 선택이며, 비우면 이름에서 만든 UUID |
 
-### 시작할 때 검사하는 규칙
+### 저장할 때 검사하는 규칙
+
+편집기, 적용, 저장할 때마다 아래를 검사하고 찾은 문제를 모두 나열합니다.
 
 - `project_id` 와 `user_name` 이 있어야 합니다. 알 수 없는 키는 오타로 보고 거부합니다.
 - 다음은 겹치면 안 됩니다: hypervisor `hostname`, `id`, `uuid` / GPU `uuid` / 한 노드 안의 GPU `index` 와 `bus_id` /
@@ -383,112 +612,18 @@ passthrough 노드는 호스트에 NVIDIA 드라이버가 없으므로 `driver_v
 형식은 검사하지 않습니다. 관리 플랫폼과 모니터링 서버가 이 값들을 저장하므로 덤프와 같은 형식을 지킵니다
 (UUID, `project_id` 와 `user_id` 는 16진수 32자).
 
-## 설정
-
-`config.json` (`config.example.json` 을 복사해 만듭니다. `config.json` 은 git 에 커밋하지 않습니다).
-
-| 키 | 기본값 | 의미 |
-|-----|--------|------|
-| `listen` | `:15000` | 가짜 OpenStack API 의 주소. 포트는 catalog URL 에도 들어갑니다 |
-| `advertise_host` | (필수) | keystone catalog URL 의 호스트. 관리 플랫폼이 접근할 수 있는 주소 |
-| `openstack.password` | (필수) | 가짜 keystone 비밀번호. 사용자와 프로젝트 이름은 토폴로지에서 가져옵니다 |
-| `openstack.token_ttl` | `1h` | 발급한 토큰의 유효 기간 |
-| `topology_file` | `""` | 토폴로지 JSON 경로. 비우면 기본 6노드 |
-| `interval` | `10s` | 메트릭을 만들어 쓰는 주기. 최소 1s |
-| `seed` | `1` | 메트릭 값의 난수 시드. sink 마다 `seed + sinks 안의 인덱스` 를 씁니다 |
-| `xid_rate` | `0.002` | 한 주기에 VM 하나가 XID 이벤트를 낼 확률 (0~1) |
-| `dry_run` | `false` | true 면 InfluxDB 에 쓰지 않고 줄 수만 로그로 남깁니다 |
-| `sinks[].name` | (필수) | 로그와 환경 변수 이름에 쓰는 이름 |
-| `sinks[].url` | | InfluxDB v1 주소 (`http://host:8086`) |
-| `sinks[].db` | | 데이터베이스 이름 |
-| `sinks[].username`, `password` | `""` | InfluxDB 계정. 둘 다 비어 있으면 인증 없이 씁니다 |
-| `sinks[].credential_id` | `""` | 관리 플랫폼이 돌려준 credential id(UUID). `credential_id` 태그 값과 `uuid` 태그의 접두사가 됩니다 |
-| `sinks[].enabled` | `false` | 켜진 sink 에만 씁니다. 켜진 sink 에는 url, db, credential_id 가 있어야 합니다 |
-
-기간 값은 `"10s"`, `"1h"` 같은 문자열입니다. 알 수 없는 키는 오타로 보고 시작을 거부합니다.
-
-### InfluxDB sink
-
-`sinks` 의 항목 하나가 InfluxDB v1 데이터베이스 하나입니다. 아래 예에서 `site-a` 는 계정으로 쓰고, `site-b` 는
-인증을 끈 InfluxDB 에 https 로 붙는 설정이며 아직 꺼 둔 상태입니다.
-
-```json
-"sinks": [
-  {
-    "name": "site-a",
-    "url": "http://influxdb-a.example.com:8086",
-    "db": "telegraf",
-    "username": "<influxdb-user>",
-    "password": "<change-me>",
-    "credential_id": "3b9f6a52-8c1d-4e7a-9f20-6d4c5e8b1a07",
-    "enabled": true
-  },
-  {
-    "name": "site-b",
-    "url": "https://influxdb-b.example.com:8086",
-    "db": "telegraf",
-    "username": "",
-    "password": "",
-    "credential_id": "",
-    "enabled": false
-  }
-]
-```
-
-| 키 | 어디서 가져오나 |
-|-----|-----------------|
-| `url` | 모니터링 서버가 읽는 InfluxDB, 즉 실제 수집 에이전트가 쓰는 곳. `http://` 또는 `https://`, 기본 포트 8086 |
-| `db` | 그 에이전트가 쓰는 데이터베이스 (telegraf 라면 `[[outputs.influxdb]]` 의 `database`) |
-| `username`, `password` | `db` 에 쓸 수 있는 계정. 에이전트 계정(telegraf 의 `username`, `password`)을 쓰면 됩니다. 인증이 꺼져 있으면 둘 다 비웁니다 |
-| `credential_id` | [빠른 시작](#빠른-시작) 4단계에서 등록한 OpenStack credential 에 관리 플랫폼이 붙인 id |
-
-쓰는 방식입니다.
-
-- `interval` 마다 켜진 sink 하나에 한 묶음씩 `POST <url>/write?db=<db>&precision=ns` 로 보냅니다. gzip 으로 압축하고, 요청 하나에 최대 5000줄입니다.
-- `username` 이나 `password` 가 있으면 HTTP Basic 인증을 씁니다.
-- 데이터베이스를 만들지 않습니다. `db` 가 미리 있어야 하고, 계정에 쓰기 권한이 있어야 합니다.
-- 네트워크 에러나 5xx 는 1초 뒤 한 번 더 보냅니다. 400(필드 타입 충돌 등)은 로그에 남기고 나머지 요청은 계속 보냅니다.
-- 성공한 묶음마다 로그에 `msg="InfluxDB write" sink=site-a lines=...` 가, 실패하면 에러와 함께 `msg="InfluxDB write failed"` 가 남습니다.
-
-꺼진 sink 는 검사하지 않으므로 덜 채운 채로 두어도 됩니다. 계정을 `config.json` 에 두고 싶지 않으면 거기서는
-`username` 과 `password` 를 비워 두고 `emulator.env` 에 넣습니다([환경 변수](#환경-변수) 참고).
-
-```sh
-# emulator.env (fill in the values after "=")
-EMU_SINK_SITE_A_USERNAME=
-EMU_SINK_SITE_A_PASSWORD=
-```
-
-### 환경 변수
-
-비어 있지 않은 환경 변수가 설정 파일보다 우선합니다. repo 루트에 `emulator.env` 가 있으면 compose 가 넘겨 줍니다(git 에 커밋하지 않습니다).
-
-| 변수 | 덮어쓰는 값 |
-|------|-------------|
-| `EMU_OS_PASSWORD` | `openstack.password` |
-| `EMU_ADVERTISE_HOST` | `advertise_host` |
-| `EMU_LISTEN` | `listen` |
-| `EMU_SINK_<NAME>_USERNAME` | `sinks[].username` |
-| `EMU_SINK_<NAME>_PASSWORD` | `sinks[].password` |
-| `EMU_SINK_<NAME>_CREDENTIAL_ID` | `sinks[].credential_id` |
-| `EMU_SINK_<NAME>_ENABLED` | `sinks[].enabled` (`true`/`false`) |
-
-`<NAME>` 은 sink 이름을 대문자로 바꾸고 영숫자가 아닌 문자를 모두 `_` 로 바꾼 것입니다. 예를 들어 `site-a` 는 `EMU_SINK_SITE_A_PASSWORD` 가 됩니다.
-
-```sh
-# emulator.env (fill in the values after "=")
-EMU_OS_PASSWORD=
-EMU_SINK_SITE_A_PASSWORD=
-```
-
 ## 명령줄
 
 | 플래그 | 의미 |
 |--------|------|
-| `-config <path>` | 설정 파일. 기본값 `config.json` (컨테이너 안에서는 작업 디렉터리가 `/etc/give-me-real-gpu`) |
-| `-dump-topology` | 기본 토폴로지를 JSON 으로 출력하고 끝납니다. 설정 파일이 필요 없습니다 |
-| `-once` | 켜진 sink 마다 메트릭을 한 번 만들어 stdout 으로 출력하고 끝납니다. 아무것도 쓰지 않습니다 |
+| `-data <dir>` | 설정 DB `give-me-real-gpu.db` 를 두는 디렉터리. 없으면 만듭니다(디렉터리 0700, 파일 0600). 기본값 `./data`, 이미지는 `-data /data` 로 실행합니다 |
+| `-listen <addr>` | 가짜 OpenStack API 와 `/healthz` 의 주소. 기본값 `:15000`. 포트는 catalog URL 에도 들어갑니다 |
+| `-ui-listen <addr>` | 설정 화면(`/ui/`)과 그 API(`/api/v1`)의 주소. 기본값 `:15080`. 로그인이 없으므로 다른 호스트에 열지 않습니다 |
+| `-once` | 저장된 설정으로 켜진 sink 마다 메트릭을 한 번 만들어 stdout 으로 출력하고 끝납니다. `influxdb` sink 는 line protocol, `otlp` sink 는 지표 이름별 데이터 포인트 수입니다. 아무것도 쓰지 않습니다. DB 가 있어야 합니다 |
+| `-dump-topology` | 기본 토폴로지를 JSON 으로 출력하고 끝납니다 |
 | `-version` | 버전을 출력합니다 |
+
+Docker 에서는 이미지나 서비스 이름 뒤에 준 인자가 `-data /data` 를 대신하므로, `-once` 와 함께 `-data /data` 를 다시 넣습니다.
 
 ## 빌드
 
@@ -500,16 +635,25 @@ make docker    # image give-me-real-gpu:<git describe>
 make up / make down
 ```
 
-Go 표준 라이브러리만 씁니다. 이미지는 `golang:1.27-alpine` 에서 빌드하고 `gcr.io/distroless/static-debian12:nonroot` 에서 실행합니다.
+Go 표준 라이브러리 밖에서는 설정 화면 서버에 echo 를, 설정 DB 에 gorm 과 순수 Go sqlite 드라이버(cgo 없음)를 씁니다.
+이미지는 `golang:1.27-alpine` 에서 빌드하고 `gcr.io/distroless/static-debian12:nonroot` 에서 실행합니다.
 
 ## 주의할 점
 
-- **켜진 sink 는 실제 InfluxDB 에 씁니다.** 실제 노드의 메트릭도 받는 InfluxDB 에 붙일 때는
+- **설정 화면에는 로그인이 없습니다.** `-ui-listen` 에 닿는 사람은 누구나 sink 를 바꿔 자기 서버로 돌릴 수 있습니다.
+  compose 는 `127.0.0.1` 에만 열어 두니 그대로 두고, 다른 PC 에서는 SSH 포트 포워딩을 씁니다.
+- **설정은 데이터 볼륨에 있습니다.** `docker compose down -v` 를 하거나 볼륨을 지우면 설정, 비밀번호를 포함한 sink,
+  토폴로지가 모두 지워지고 다음 시작은 다시 첫 실행이 됩니다. 비밀번호는 DB 파일에 평문으로 있으므로 볼륨과 그 사본을 지킵니다.
+- **켜진 sink 는 실제 저장소에 씁니다.** 실제 노드의 메트릭도 받는 InfluxDB 에 붙일 때는
   관리 플랫폼에 이 에뮬레이터용 credential 을 따로 등록하고 그 credential id 만 씁니다. 메트릭은
-  credential id 로 구분하므로 실제 노드의 credential id 를 다시 쓰면 데이터가 섞입니다.
-- 이 프로그램은 자신이 쓴 행을 지우지 않습니다. 테스트가 끝나면 sink 를 끄고, 필요하면 InfluxDB 쪽에서 credential id 기준으로 지웁니다.
-- hypervisor 나 VM 이 토폴로지에서 빠지거나 id 가 바뀌면 예전 것이 관리 플랫폼에 남아 있을 수 있습니다. 기본 토폴로지는
-  id 를 이름에서 만들므로 이름을 바꾸면 id 도 바뀝니다. 토폴로지 파일은 파일에 적힌 id 를 그대로 씁니다.
+  credential id 로 구분하므로 실제 노드의 credential id 를 다시 쓰면 데이터가 섞입니다. OTLP 도 실제 노드의
+  `entity_id` 를 직접 넣으면 같은 식으로 섞입니다.
+- 이 프로그램은 자신이 쓴 데이터를 지우지 않습니다. 테스트가 끝나면 sink 를 끄고, 필요하면 저장소 쪽에서 지웁니다
+  (InfluxDB 는 credential id 기준, OTLP 저장소는 `entity_id` 기준).
+- hypervisor 나 VM 이 토폴로지에서 빠지거나 id 가 바뀌면 예전 것이 관리 플랫폼에 남아 있을 수 있습니다.
+  채워 넣은 id 는 이름에서 만들므로 이름을 바꾸면 id 도 바뀝니다. 직접 넣은 id 는 그대로 씁니다.
+- catalog URL 에는 `-listen` 포트가 들어갑니다. OpenStack 포트를 호스트의 다른 포트 번호로 publish 하면 관리 플랫폼이
+  닿을 수 없는 URL 을 받으므로 같은 번호로 publish 합니다.
 - 가짜 API 는 관리 플랫폼이 동기화에 쓰는 조회 호출만 에뮬레이트합니다. VM 생성·삭제 같은 쓰기 요청은 처리하지 않습니다.
 
 ## 라이선스
