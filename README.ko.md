@@ -110,6 +110,12 @@ XID 행은 GPU VM 마다 수집 1회당 확률 `xid_rate` 로 나오고, 코드�
 
    컨테이너는 nonroot(uid 65532)로 실행되므로 권한이 600 인 `config.json` 은 읽지 못합니다(`permission denied`).
    644 파일에 비밀번호를 두고 싶지 않다면 비밀값은 비워 두고 `emulator.env` 에 환경 변수로 넣습니다([환경 변수](#환경-변수) 참고).
+   compose 를 쓰면 repo 루트에 `emulator.env` 를 만들고 `=` 뒤에 비밀번호를 채웁니다. 이 값이 `openstack.password` 를 덮어씁니다.
+
+   ```sh
+   # emulator.env (fill in the value after "=")
+   EMU_OS_PASSWORD=
+   ```
 
 2. 실행합니다.
 
@@ -121,11 +127,23 @@ XID 행은 GPU VM 마다 수집 1회당 확률 `xid_rate` 로 나오고, 코드�
 3. 시작 로그에서 등록할 값을 확인합니다.
 
    ```
-   level=INFO msg="OpenStack credential to register in the management platform (password is openstack.password from the config)" url=http://192.0.2.10:15000/v3 user=emu-admin project_id=... project_name=emu-gpu domain_id=default region=RegionOne
+   level=INFO msg="OpenStack credential to register in the management platform (password is openstack.password from the config)" url=http://192.0.2.10:15000/v3 user=emu-admin project_id=f2aeea254abf2861de80ddccb3cc7225 project_name=emu-gpu domain_id=default region=RegionOne
    ```
 
-4. 관리 플랫폼에 OpenStack credential 을 등록합니다. 인증 URL 에는 로그의 `url`, 사용자에는 `user`,
-   비밀번호에는 `openstack.password`, 프로젝트와 도메인에는 로그의 `project_id` 와 `domain_id` 를 씁니다.
+4. 관리 플랫폼에 아래 값으로 OpenStack credential 을 등록합니다.
+
+   | 항목 | 값 |
+   |------|-----|
+   | 인증 URL | `http://<advertise_host>:<listen 포트>/v3` (예: `http://192.0.2.10:15000/v3`) |
+   | 도메인 ID | `default` |
+   | 사용자 | `emu-admin` |
+   | 비밀번호 | `openstack.password`, 또는 설정돼 있으면 `EMU_OS_PASSWORD` (compose 를 쓰면 `emulator.env` 의 `EMU_OS_PASSWORD=` 뒤 값) |
+   | 프로젝트 ID | `f2aeea254abf2861de80ddccb3cc7225` |
+   | 프로젝트 이름 | `emu-gpu` |
+   | 리전 | `RegionOne` |
+
+   도메인·사용자·프로젝트·리전은 기본 토폴로지의 고정값이라(프로젝트 id 는 프로젝트 이름에서 계산합니다) 재시작해도 같습니다.
+   `topology_file` 을 쓰면 그 파일에 적힌 값이 쓰이므로 시작 로그에서 확인합니다.
    관리 플랫폼이 동기화를 마치면 위 표의 hypervisor 와 VM 이 보여야 합니다.
 
 5. 관리 플랫폼이 돌려준 credential id 를 sink 의 `credential_id` 에 넣고, InfluxDB 계정

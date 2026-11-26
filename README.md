@@ -110,6 +110,12 @@ Some quirks match the real collection pipeline on purpose.
 
    The container runs as nonroot (uid 65532), so it cannot read a `config.json` with mode 600 (`permission denied`).
    If you do not want passwords in a 644 file, leave the secrets empty and put them in `emulator.env` as environment variables (see [Environment variables](#environment-variables)).
+   With compose, create `emulator.env` in the repo root and fill in the password after `=`. It overrides `openstack.password`.
+
+   ```sh
+   # emulator.env (fill in the value after "=")
+   EMU_OS_PASSWORD=
+   ```
 
 2. Start it.
 
@@ -121,11 +127,23 @@ Some quirks match the real collection pipeline on purpose.
 3. Find the values to register in the startup log.
 
    ```
-   level=INFO msg="OpenStack credential to register in the management platform (password is openstack.password from the config)" url=http://192.0.2.10:15000/v3 user=emu-admin project_id=... project_name=emu-gpu domain_id=default region=RegionOne
+   level=INFO msg="OpenStack credential to register in the management platform (password is openstack.password from the config)" url=http://192.0.2.10:15000/v3 user=emu-admin project_id=f2aeea254abf2861de80ddccb3cc7225 project_name=emu-gpu domain_id=default region=RegionOne
    ```
 
-4. Register an OpenStack credential in the management platform. Use `url` from the log as the auth URL, `user` as the user,
-   `openstack.password` as the password, and `project_id` and `domain_id` from the log for the project and domain.
+4. Register an OpenStack credential in the management platform with these values.
+
+   | Field | Value |
+   |-------|-------|
+   | Auth URL | `http://<advertise_host>:<listen port>/v3` (for example `http://192.0.2.10:15000/v3`) |
+   | Domain ID | `default` |
+   | User | `emu-admin` |
+   | Password | `openstack.password`, or `EMU_OS_PASSWORD` when it is set (with compose, the value after `EMU_OS_PASSWORD=` in `emulator.env`) |
+   | Project ID | `f2aeea254abf2861de80ddccb3cc7225` |
+   | Project name | `emu-gpu` |
+   | Region | `RegionOne` |
+
+   Domain, user, project and region are fixed values of the default topology (the project id is derived from the project name),
+   so they stay the same across restarts. With `topology_file` they are whatever that file says; read them from the startup log.
    Once the management platform syncs, the hypervisors and VMs in the table above should appear.
 
 5. Put the credential id returned by the management platform into the sink's `credential_id`, fill in the InfluxDB account
