@@ -5,7 +5,8 @@
 #
 #   tools/demo/run.sh [output.gif]
 #
-# The output defaults to docs/demo.gif (docs/demo.ko.gif with DEMO_LANG=ko). See tools/demo/README.md for the environment variables.
+# The output defaults to docs/demo.gif (docs/demo.ko.gif with DEMO_LANG=ko). See tools/demo/README.md for the scenes,
+# the captions and the environment variables.
 set -euo pipefail
 
 DEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,7 +21,7 @@ UI_PORT="${DEMO_UI_PORT:-27780}"
 CHROME="${CHROME:-google-chrome}"
 NODE="${NODE:-node}"
 WIDTH="${DEMO_WIDTH:-960}"
-MAX_BYTES="${DEMO_MAX_BYTES:-3145728}"
+MAX_BYTES="${DEMO_MAX_BYTES:-6291456}"
 KEEP_WORK="${DEMO_KEEP_WORK:-0}"
 
 log() { printf '[demo] %s\n' "$*" >&2; }
@@ -165,20 +166,26 @@ log "recording"
 
 log "making the GIF"
 mkdir -p "$(dirname "$OUT")"
-for step in "${DEMO_FPS:-10}:128" 8:128 8:64 6:64 5:48; do
-	fps="${step%:*}"
-	colors="${step#*:}"
-	ffmpeg -v error -y -f concat -safe 0 -i "$WORK/frames/frames.txt" \
-		-vf "fps=$fps,scale=$WIDTH:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=$colors:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \
-		-loop 0 "$WORK/demo.gif"
-	size="$(stat -c %s "$WORK/demo.gif")"
-	log "$fps fps, $colors colors: $size bytes"
-	if [ "$size" -le "$MAX_BYTES" ]; then
-		break
-	fi
+# Lower the frame rate and the colors first; only when that is not enough, make the GIF narrower.
+fit=0
+for width in "$WIDTH" $((WIDTH * 7 / 8)) $((WIDTH * 3 / 4)); do
+	for step in "${DEMO_FPS:-10}:128" 8:128 8:64 6:64 5:48; do
+		fps="${step%:*}"
+		colors="${step#*:}"
+		ffmpeg -v error -y -f concat -safe 0 -i "$WORK/frames/frames.txt" \
+			-vf "fps=$fps,scale=$width:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=$colors:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \
+			-loop 0 "$WORK/demo.gif"
+		size="$(stat -c %s "$WORK/demo.gif")"
+		log "${width}px, $fps fps, $colors colors: $size bytes"
+		if [ "$size" -le "$MAX_BYTES" ]; then
+			fit=1
+			break 2
+		fi
+	done
 done
-[ "$size" -le "$MAX_BYTES" ] || log "warning: the GIF is still larger than $MAX_BYTES bytes"
+[ "$fit" = 1 ] || log "warning: the GIF is still larger than $MAX_BYTES bytes"
 
 cp "$WORK/demo.gif" "$OUT"
 duration="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$OUT")"
-log "wrote $OUT: $(stat -c %s "$OUT") bytes, ${duration}s, ${WIDTH}px wide, $fps fps, $(grep -c '^file' "$WORK/frames/frames.txt") frames captured"
+gif_frames="$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1:nokey=1 "$OUT")"
+log "wrote $OUT: $(stat -c %s "$OUT") bytes, ${duration}s, ${width}px wide, $fps fps, $colors colors, $gif_frames GIF frames from $(find "$WORK/frames" -name 'f*.png' | wc -l) screenshots"
