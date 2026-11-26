@@ -41,6 +41,7 @@ func TestServesFiles(t *testing.T) {
 		{"/ui/", "text/html; charset=utf-8", false},
 		{"/ui/index.html", "text/html; charset=utf-8", false},
 		{"/ui/app.js", "text/javascript; charset=utf-8", false},
+		{"/ui/theme.js", "text/javascript; charset=utf-8", false},
 		{"/ui/style.css", "text/css; charset=utf-8", false},
 		{"/ui/i18n/en.json", "application/json; charset=utf-8", false},
 		{"/ui/i18n/ko.json", "application/json; charset=utf-8", false},
@@ -72,6 +73,74 @@ func TestServesFiles(t *testing.T) {
 	}
 	if rec := get(t, h, http.MethodGet, "/ui/", nil); rec.Header().Get("Content-Security-Policy") == "" {
 		t.Error("index.html has no Content-Security-Policy")
+	}
+}
+
+var (
+	tagRe        = regexp.MustCompile(`(?is)<(script|link|style)\b[^>]*>`)
+	inlineAttrRe = regexp.MustCompile(`(?i)\s(style|on[a-z]+)\s*=`)
+)
+
+// The theme has to be on <html> before the first paint, so theme.js is a plain
+// (not deferred) script in <head> ahead of the stylesheets. The CSP allows no
+// inline script or style, so the page must not need any.
+func TestIndexThemeScriptAndCSP(t *testing.T) {
+	b, err := fs.ReadFile(staticFS, "static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(b)
+	head, _, ok := strings.Cut(html, "</head>")
+	if !ok {
+		t.Fatal("index.html has no </head>")
+	}
+	themeAt, firstCSS := -1, -1
+	for _, loc := range tagRe.FindAllStringIndex(head, -1) {
+		tag := head[loc[0]:loc[1]]
+		lower := strings.ToLower(tag)
+		switch {
+		case strings.Contains(lower, `src="theme.js"`):
+			themeAt = loc[0]
+			if strings.Contains(lower, "defer") || strings.Contains(lower, "async") {
+				t.Errorf("theme.js must load synchronously: %s", tag)
+			}
+		case strings.HasPrefix(lower, "<link") && strings.Contains(lower, `rel="stylesheet"`) && firstCSS < 0:
+			firstCSS = loc[0]
+		}
+	}
+	if themeAt < 0 {
+		t.Fatal("theme.js is not loaded in <head>")
+	}
+	if firstCSS < 0 || themeAt > firstCSS {
+		t.Errorf("theme.js (at %d) must come before the first stylesheet (at %d)", themeAt, firstCSS)
+	}
+	for _, m := range tagRe.FindAllStringSubmatch(html, -1) {
+		tag, kind := strings.ToLower(m[0]), strings.ToLower(m[1])
+		if kind == "style" || (kind == "script" && !strings.Contains(tag, "src=")) {
+			t.Errorf("inline %s is blocked by the CSP: %s", m[1], m[0])
+		}
+	}
+	if m := inlineAttrRe.FindString(html); m != "" {
+		t.Errorf("index.html has an inline attribute the CSP blocks: %q", m)
+	}
+	for _, want := range []string{`id="theme-toggle"`, `id="lang-pick"`, `<option value="en"`, `<option value="ko"`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("index.html lacks %s", want)
+		}
+	}
+}
+
+func TestI18nKeyNames(t *testing.T) {
+	bad := regexp.MustCompile(`(?i)passw|pw`)
+	for _, lang := range []string{"en", "ko"} {
+		for k := range readDict(t, lang) {
+			if bad.MatchString(k) {
+				t.Errorf("%s.json key %q names a secret; use \"secret\" instead", lang, k)
+			}
+		}
+	}
+	if en := readDict(t, "en"); en["theme.dark"] == "" || en["lang.label"] == "" {
+		t.Error("en.json lacks theme.dark or lang.label")
 	}
 }
 
@@ -272,6 +341,33 @@ func TestJavaScriptSyntax(t *testing.T) {
 	}
 }
 
+func TestThemeHelper(t *testing.T) {
+	node := nodeOrSkip(t)
+	abs, err := filepath.Abs("static/theme.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _ := json.Marshal(abs)
+	script := `const h = require(` + string(path) + `);
+console.log(JSON.stringify([
+  h.pickTheme(null, false), h.pickTheme(null, true),
+  h.pickTheme("dark", false), h.pickTheme("light", true),
+  h.pickTheme("blue", true), h.pickTheme("", false), h.pickTheme(undefined, true)
+]));`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v\n%s", err, out)
+	}
+	var got []string
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("node output %q: %v", out, err)
+	}
+	want := []string{"light", "dark", "dark", "light", "dark", "light", "dark"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("pickTheme = %v, want %v", got, want)
+	}
+}
+
 func TestJavaScriptHelpers(t *testing.T) {
 	node := nodeOrSkip(t)
 	abs, err := filepath.Abs("static/app.js")
@@ -335,6 +431,17 @@ console.log(JSON.stringify({
   ].map(h.tagRuleProblem),
   influxRules: h.sinkPayload({name: "site-a", type: "influxdb", url: "http://192.0.2.10:8086", db: "telegraf",
     credential_id: "cid", enabled: true, tag_rules: [{action: "drop", key: "uuid", value: "x"}, {action: "add", key: "", value: ""}]}),
+  statusView: [
+    h.sinkStatusView({enabled: true, last_write: "", lines: 2032, elapsed_ms: 0}, true),
+    h.sinkStatusView({enabled: true, last_write: "", lines: 0}, true),
+    h.sinkStatusView({enabled: false, last_write: "", lines: 0}, true),
+    h.sinkStatusView({enabled: true, last_write: "2026-11-27T03:00:00Z", lines: 120, elapsed_ms: 15}, false),
+    h.sinkStatusView({enabled: true, last_write: "2026-11-27T03:00:00Z", lines: 0, elapsed_ms: 3}, false),
+    h.sinkStatusView({enabled: true, last_write: "", lines: 0}, false),
+    h.sinkStatusView({enabled: true, last_write: "", lines: 50}, false),
+    h.sinkStatusView({enabled: true, last_write: "2026-11-27T03:00:00Z", lines: 120, elapsed_ms: 15}, true),
+    h.sinkStatusView({enabled: false, last_write: "2026-11-27T03:00:00Z", lines: 120, elapsed_ms: 15}, true)
+  ],
   toggled: h.sinkPayload(Object.assign(h.sinkValues({id: 3, name: "site-b", type: "otlp",
     url: "http://192.0.2.20:8429/opentelemetry/v1/metrics", influx_version: "", org: "", db: "", username: "",
     credential_id: "", enabled: true, password_set: true, token_set: true,
@@ -402,6 +509,17 @@ console.log(JSON.stringify({
 			"name": "site-a", "type": "influxdb", "url": "http://192.0.2.10:8086", "influx_version": "v1", "org": "",
 			"db": "telegraf", "username": "", "credential_id": "cid", "enabled": true,
 			"tag_rules": []any{map[string]any{"action": "drop", "key": "uuid"}},
+		},
+		"statusView": []any{
+			map[string]any{"last": "dry_run", "lines": 2032.0, "elapsed_ms": nil},
+			map[string]any{"last": "dry_run", "lines": nil, "elapsed_ms": nil},
+			map[string]any{"last": "never", "lines": nil, "elapsed_ms": nil},
+			map[string]any{"last": "time", "lines": 120.0, "elapsed_ms": 15.0},
+			map[string]any{"last": "time", "lines": 0.0, "elapsed_ms": 3.0},
+			map[string]any{"last": "never", "lines": nil, "elapsed_ms": nil},
+			map[string]any{"last": "never", "lines": 50.0, "elapsed_ms": nil},
+			map[string]any{"last": "dry_run", "lines": 120.0, "elapsed_ms": nil},
+			map[string]any{"last": "time", "lines": 120.0, "elapsed_ms": 15.0},
 		},
 		"toggled": map[string]any{
 			"name": "site-b", "type": "otlp", "url": "http://192.0.2.20:8429/opentelemetry/v1/metrics", "influx_version": "",

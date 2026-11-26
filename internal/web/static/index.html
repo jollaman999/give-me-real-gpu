@@ -5,16 +5,31 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>give-me-real-gpu</title>
+<script src="theme.js"></script>
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="topology.css">
 <script src="app.js" defer></script>
 <script src="topology.js" defer></script>
 </head>
 <body>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<div class="app">
 <header class="topbar">
-  <div class="brand">
-    <span class="brand-name">give-me-real-gpu</span>
-    <span class="brand-sub" data-i18n="app.subtitle">GPU cloud emulator settings</span>
+  <div class="topline">
+    <div class="brand">
+      <span class="brand-name">give-me-real-gpu</span>
+      <span class="brand-sub" data-i18n="app.subtitle">GPU cloud emulator settings</span>
+    </div>
+    <div class="corner">
+      <select id="lang-pick" class="lang-pick" data-i18n-aria-label="lang.label">
+        <option value="en" lang="en">English</option>
+        <option value="ko" lang="ko">한국어</option>
+      </select>
+      <button type="button" id="theme-toggle" class="theme-toggle" role="switch" aria-checked="false" data-i18n-aria-label="theme.dark" data-i18n-title="theme.dark">
+        <span class="theme-track" aria-hidden="true"><span class="theme-knob"></span></span>
+      </button>
+    </div>
   </div>
   <nav class="tabs" role="tablist" aria-label="Sections">
     <a class="tab" role="tab" href="#status" data-tab="status" data-i18n="tab.status">Status</a>
@@ -22,13 +37,7 @@
     <a class="tab" role="tab" href="#sinks" data-tab="sinks" data-i18n="tab.sinks">Sinks</a>
     <a class="tab" role="tab" href="#topology" data-tab="topology" data-i18n="tab.topology">Topology</a>
   </nav>
-  <div class="lang" role="group" data-i18n-aria-label="lang.label">
-    <button type="button" class="lang-btn" data-lang="en">EN</button>
-    <button type="button" class="lang-btn" data-lang="ko">한국어</button>
-  </div>
 </header>
-
-<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 <div id="conn-error" class="notice notice-error" hidden>
   <span data-i18n="app.conn_error">Cannot reach the server. Retrying.</span>
@@ -268,5 +277,6 @@
   <span id="version" class="muted"></span>
   <span id="updated" class="muted"></span>
 </footer>
+</div>
 </body>
 </html>

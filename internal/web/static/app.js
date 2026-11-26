@@ -131,7 +131,23 @@
     return String(url || "").trim() === original.url;
   }
 
+  // sinkStatusView decides what the status table shows for one sink. A dry run generates
+  // lines but never writes, so the line count stands on its own and last_write stays empty.
+  // last is "dry_run", "time" or "never". lines and elapsed_ms are null when there is nothing to show.
+  function sinkStatusView(k, dryRun) {
+    k = k || {};
+    var lines = Number(k.lines || 0);
+    var wrote = !!k.last_write;
+    var last = dryRun && k.enabled ? "dry_run" : wrote ? "time" : "never";
+    return {
+      last: last,
+      lines: lines > 0 || wrote ? lines : null,
+      elapsed_ms: wrote && last !== "dry_run" ? Number(k.elapsed_ms || 0) : null
+    };
+  }
+
   var helpers = {
+    sinkStatusView: sinkStatusView,
     pickLanguage: pickLanguage,
     initialLanguage: initialLanguage,
     format: format,
@@ -160,6 +176,7 @@
     statusBusy: false,
     settings: null,
     settingsLoaded: false,
+    dryRun: false,
     sinks: [],
     editing: null
   };
@@ -259,9 +276,7 @@
       try { localStorage.setItem(LANG_KEY, lang); } catch (e) { /* storage may be blocked */ }
       document.documentElement.lang = lang;
       document.title = t("app.title");
-      document.querySelectorAll(".lang-btn").forEach(function (b) {
-        b.setAttribute("aria-pressed", String(b.getAttribute("data-lang") === lang));
-      });
+      $("lang-pick").value = lang;
       applyI18n(document);
       renderStatus();
       renderSettingsHints();
@@ -336,9 +351,14 @@
   function refreshStatus() {
     if (state.statusBusy) return;
     state.statusBusy = true;
-    api("GET", "/api/v1/status")
-      .then(function (res) {
+    Promise.all([
+      api("GET", "/api/v1/status"),
+      api("GET", "/api/v1/settings").catch(function () { return null; })
+    ])
+      .then(function (rs) {
+        var res = rs[0];
         if (!res.ok || !res.data) throw new Error(errorText(res));
+        if (rs[1] && rs[1].ok && rs[1].data) state.dryRun = !!rs[1].data.dry_run;
         state.status = res.data;
         state.statusAt = new Date();
         $("conn-error").hidden = true;
@@ -369,9 +389,11 @@
     tbody.textContent = "";
     $("status-sinks").hidden = sinks.length === 0;
     sinks.forEach(function (k) {
-      var last = k.last_write
-        ? el("span", { text: relativeTime(k.last_write), title: new Date(k.last_write).toLocaleString(state.lang) })
-        : el("span", { className: "muted", text: t("status.never") });
+      var view = sinkStatusView(k, state.dryRun);
+      var last;
+      if (view.last === "dry_run") last = el("span", { className: "badge badge-dry", text: t("status.dry_run"), title: t("status.dry_run_title") });
+      else if (view.last === "time") last = el("span", { text: relativeTime(k.last_write), title: new Date(k.last_write).toLocaleString(state.lang) });
+      else last = el("span", { className: "muted", text: t("status.never") });
       var err = k.last_error
         ? el("span", { className: "error-text", text: k.last_error, title: k.last_error })
         : el("span", { className: "muted", text: "-" });
@@ -380,8 +402,8 @@
         el("td", { attrs: { "data-label": t("sinks.col_type") }, text: typeLabel(k.type) }),
         el("td", { attrs: { "data-label": t("sinks.col_enabled") } }, [yesNo(k.enabled)]),
         el("td", { attrs: { "data-label": t("status.col_last_write") } }, [last]),
-        el("td", { className: "num", attrs: { "data-label": t("status.col_lines") }, text: k.last_write ? Number(k.lines || 0).toLocaleString(state.lang) : "-" }),
-        el("td", { className: "num", attrs: { "data-label": t("status.col_elapsed") }, text: k.last_write ? t("status.elapsed_ms", { n: Number(k.elapsed_ms || 0).toLocaleString(state.lang) }) : "-" }),
+        el("td", { className: "num", attrs: { "data-label": t("status.col_lines") }, text: view.lines === null ? "-" : view.lines.toLocaleString(state.lang) }),
+        el("td", { className: "num", attrs: { "data-label": t("status.col_elapsed") }, text: view.elapsed_ms === null ? "-" : t("status.elapsed_ms", { n: view.elapsed_ms.toLocaleString(state.lang) }) }),
         el("td", { className: "wrap", attrs: { "data-label": t("status.col_last_error") } }, [err])
       ]));
     });
@@ -420,6 +442,7 @@
       var s = res.data;
       state.settings = s;
       state.settingsLoaded = true;
+      state.dryRun = !!s.dry_run;
       $("f-advertise_host").value = s.advertise_host || "";
       $("f-openstack_password").value = "";
       $("f-token_ttl").value = s.token_ttl || "";
@@ -779,9 +802,7 @@
     window.addEventListener("load", function () {
       if (state.tab === "topology") mountTopology();
     });
-    document.querySelectorAll(".lang-btn").forEach(function (b) {
-      b.addEventListener("click", function () { setLanguage(b.getAttribute("data-lang")); });
-    });
+    $("lang-pick").addEventListener("change", function () { setLanguage($("lang-pick").value); });
     document.querySelectorAll("button.copy").forEach(function (b) {
       b.addEventListener("click", function () { copyFrom(b.getAttribute("data-copy"), b); });
     });
