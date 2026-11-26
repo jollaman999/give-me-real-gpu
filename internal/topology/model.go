@@ -39,6 +39,8 @@ type Hypervisor struct {
 	DriverVersion string `json:"driver_version"`
 	CUDAVersion   string `json:"cuda_version"` // host CUDA driver version (DCGM_FI_CUDA_DRIVER_VERSION format, e.g. 13020)
 	GPUs          []*GPU `json:"gpus"`
+	// entity_id the OpenTelemetry-based agent stamps on every data point. Empty means EntityID(Hostname, "").
+	EntityID string `json:"entity_id,omitempty"`
 }
 
 // GPU is a single physical GPU.
@@ -101,6 +103,8 @@ type VM struct {
 	VCPUs              int    `json:"vcpus"`
 	MemoryMB           int    `json:"memory_mb"`
 	DiskGB             int    `json:"disk_gb"`
+	// entity_id the OpenTelemetry-based agent stamps on every data point. Empty means EntityID(Name, "").
+	EntityID string `json:"entity_id,omitempty"`
 }
 
 // Flavor is a nova flavor. GPU flavors carry resources:VGPU or pci_passthrough:alias in ExtraSpecs.
@@ -111,6 +115,15 @@ type Flavor struct {
 	RAMMB      int               `json:"ram_mb"`
 	DiskGB     int               `json:"disk_gb"`
 	ExtraSpecs map[string]string `json:"extra_specs"`
+}
+
+// EntityID is the entity_id of a node: override when it is set, otherwise a UUID derived from the node name,
+// so the id stays the same across restarts.
+func EntityID(name, override string) string {
+	if override != "" {
+		return override
+	}
+	return StableUUID("entity", name)
 }
 
 // AllVMs returns every VM, ordered by hypervisor and then by GPU.
