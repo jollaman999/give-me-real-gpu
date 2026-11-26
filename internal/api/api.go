@@ -120,7 +120,7 @@ type handler struct {
 // Register adds the /api/v1 routes to e. sp may be nil, in which case /status reports an empty status.
 func Register(e *echo.Echo, st *store.Store, sp StatusProvider) {
 	h := &handler{st: st, sp: sp}
-	g := e.Group("/api/v1")
+	g := e.Group("/api/v1", guard)
 	g.GET("/status", h.getStatus)
 	g.GET("/settings", h.getSettings)
 	g.PUT("/settings", h.putSettings)

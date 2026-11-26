@@ -44,6 +44,7 @@ func newServer(t *testing.T, sp StatusProvider) (*echo.Echo, *store.Store) {
 func do(t *testing.T, e *echo.Echo, method, path, body string) (int, string) {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Host = testHost
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
