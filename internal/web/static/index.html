@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>give-me-real-gpu</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="topology.css">
+<script src="app.js" defer></script>
+<script src="topology.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-name">give-me-real-gpu</span>
+    <span class="brand-sub" data-i18n="app.subtitle">GPU cloud emulator settings</span>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <a class="tab" role="tab" href="#status" data-tab="status" data-i18n="tab.status">Status</a>
+    <a class="tab" role="tab" href="#general" data-tab="general" data-i18n="tab.general">General</a>
+    <a class="tab" role="tab" href="#sinks" data-tab="sinks" data-i18n="tab.sinks">Sinks</a>
+    <a class="tab" role="tab" href="#topology" data-tab="topology" data-i18n="tab.topology">Topology</a>
+  </nav>
+  <div class="lang" role="group" data-i18n-aria-label="lang.label">
+    <button type="button" class="lang-btn" data-lang="en">EN</button>
+    <button type="button" class="lang-btn" data-lang="ko">한국어</button>
+  </div>
+</header>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<div id="conn-error" class="notice notice-error" hidden>
+  <span data-i18n="app.conn_error">Cannot reach the server. Retrying.</span>
+</div>
+
+<main>
+  <section id="tab-status" class="panel" data-panel="status" hidden>
+    <div id="setup-banner" class="notice notice-warn setup" hidden>
+      <div>
+        <strong data-i18n="status.setup_title">Setup needed</strong>
+        <p data-i18n="status.setup_body">The fake OpenStack API answers 503 until the advertise host and the OpenStack password are set.</p>
+        <p id="setup-reason" class="muted"></p>
+      </div>
+      <a class="btn btn-primary" href="#general" data-i18n="status.setup_button">Open General settings</a>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2 data-i18n="status.openstack_title">OpenStack API</h2>
+        <span id="os-ready" class="badge"></span>
+      </div>
+      <p class="muted" data-i18n="status.register_help">Register these values in the management platform.</p>
+      <div class="table-wrap">
+        <table class="kv">
+          <tbody>
+            <tr><th data-i18n="status.auth_url">Auth URL</th><td><code id="os-auth_url"></code></td><td><button type="button" class="btn btn-small copy" data-copy="os-auth_url" data-i18n="common.copy">Copy</button></td></tr>
+            <tr><th data-i18n="status.user">User</th><td><code id="os-user"></code></td><td><button type="button" class="btn btn-small copy" data-copy="os-user" data-i18n="common.copy">Copy</button></td></tr>
+            <tr><th data-i18n="status.secret">Password</th><td><span data-i18n="status.secret_value">The value set in General</span></td><td></td></tr>
+            <tr><th data-i18n="status.project_id">Project ID</th><td><code id="os-project_id"></code></td><td><button type="button" class="btn btn-small copy" data-copy="os-project_id" data-i18n="common.copy">Copy</button></td></tr>
+            <tr><th data-i18n="status.project_name">Project name</th><td><code id="os-project_name"></code></td><td><button type="button" class="btn btn-small copy" data-copy="os-project_name" data-i18n="common.copy">Copy</button></td></tr>
+            <tr><th data-i18n="status.domain_id">Domain ID</th><td><code id="os-domain_id"></code></td><td><button type="button" class="btn btn-small copy" data-copy="os-domain_id" data-i18n="common.copy">Copy</button></td></tr>
+            <tr><th data-i18n="status.region">Region</th><td><code id="os-region"></code></td><td><button type="button" class="btn btn-small copy" data-copy="os-region" data-i18n="common.copy">Copy</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2 data-i18n="status.sinks_title">Metric sinks</h2>
+      </div>
+      <p id="status-no-sinks" class="muted" hidden>
+        <span data-i18n="status.no_sinks">No sinks yet.</span>
+        <a href="#sinks" data-i18n="status.add_sink_link">Add one in Sinks.</a>
+      </p>
+      <div class="table-wrap">
+        <table id="status-sinks" class="grid">
+          <thead>
+            <tr>
+              <th data-i18n="sinks.col_name">Name</th>
+              <th data-i18n="sinks.col_type">Type</th>
+              <th data-i18n="sinks.col_enabled">Enabled</th>
+              <th data-i18n="status.col_last_write">Last write</th>
+              <th class="num" data-i18n="status.col_lines">Lines</th>
+              <th class="num" data-i18n="status.col_elapsed">Took</th>
+              <th data-i18n="status.col_last_error">Last error</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-general" class="panel" data-panel="general" hidden>
+    <form id="settings-form" class="card form" novalidate>
+      <div class="card-head">
+        <h2 data-i18n="general.title">General</h2>
+      </div>
+      <div class="field">
+        <label for="f-advertise_host" data-i18n="general.advertise_host">Advertise host</label>
+        <input id="f-advertise_host" name="advertise_host" type="text" autocomplete="off" spellcheck="false" placeholder="192.0.2.10">
+        <p class="hint" data-i18n="general.advertise_host_hint">Host name or IP the management platform uses to reach this emulator. It goes into the endpoint URLs of the keystone catalog.</p>
+      </div>
+      <div class="field">
+        <label for="f-openstack_password" data-i18n="general.openstack_secret">OpenStack password</label>
+        <input id="f-openstack_password" name="openstack_password" type="password" autocomplete="new-password">
+        <p class="hint" id="f-openstack_password-hint"></p>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="f-token_ttl" data-i18n="general.token_ttl">Token lifetime</label>
+          <input id="f-token_ttl" name="token_ttl" type="text" autocomplete="off" spellcheck="false" placeholder="1h">
+          <p class="hint" data-i18n="general.token_ttl_hint">How long a keystone token stays valid, e.g. 1h, 30m.</p>
+        </div>
+        <div class="field">
+          <label for="f-interval" data-i18n="general.interval">Write interval</label>
+          <input id="f-interval" name="interval" type="text" autocomplete="off" spellcheck="false" placeholder="10s">
+          <p class="hint" data-i18n="general.interval_hint">How often metrics are written to every sink, e.g. 10s. At least 1s.</p>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="f-seed" data-i18n="general.seed">Seed</label>
+          <input id="f-seed" name="seed" type="number" step="1">
+          <p class="hint" data-i18n="general.seed_hint">Random seed for the generated values. The same seed gives the same series.</p>
+        </div>
+        <div class="field">
+          <label for="f-xid_rate" data-i18n="general.xid_rate">XID error rate</label>
+          <input id="f-xid_rate" name="xid_rate" type="number" step="any" min="0" max="1">
+          <p class="hint" data-i18n="general.xid_rate_hint">Chance per GPU per write that an XID error appears, from 0 to 1.</p>
+        </div>
+      </div>
+      <div class="field">
+        <label class="check">
+          <input id="f-dry_run" name="dry_run" type="checkbox">
+          <span data-i18n="general.dry_run">Dry run</span>
+        </label>
+        <p class="hint" data-i18n="general.dry_run_hint">Generate metrics but do not send them to any sink.</p>
+      </div>
+      <div class="notice notice-info">
+        <span data-i18n="general.ports_note">The ports (-listen for the OpenStack API, -ui-listen for this page) are command-line flags. Changing them needs a restart.</span>
+      </div>
+      <div id="settings-result" class="result" hidden></div>
+      <div class="actions">
+        <button type="button" class="btn" id="settings-reload" data-i18n="common.reload">Reload</button>
+        <button type="submit" class="btn btn-primary" data-i18n="common.save">Save</button>
+      </div>
+    </form>
+  </section>
+
+  <section id="tab-sinks" class="panel" data-panel="sinks" hidden>
+    <div class="card">
+      <div class="card-head">
+        <h2 data-i18n="sinks.title">Sinks</h2>
+        <button type="button" class="btn btn-primary" id="sink-add" data-i18n="sinks.add">Add sink</button>
+      </div>
+      <p class="muted" data-i18n="sinks.help">Every enabled sink receives the same metrics on each write interval.</p>
+      <div id="sinks-result" class="result" hidden></div>
+      <p id="sinks-empty" class="muted" hidden data-i18n="sinks.empty">No sinks yet. Add one to start writing metrics.</p>
+      <div class="table-wrap">
+        <table id="sinks-table" class="grid">
+          <thead>
+            <tr>
+              <th data-i18n="sinks.col_name">Name</th>
+              <th data-i18n="sinks.col_type">Type</th>
+              <th data-i18n="sinks.col_url">URL</th>
+              <th data-i18n="sinks.col_enabled">Enabled</th>
+              <th class="actions-col"><span class="sr-only" data-i18n="sinks.col_actions">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <dialog id="sink-dialog" class="dialog">
+      <form id="sink-form" class="form" method="dialog" novalidate>
+        <h2 id="sink-dialog-title"></h2>
+        <div class="field">
+          <label for="s-name" data-i18n="sinks.name">Name</label>
+          <input id="s-name" name="name" type="text" autocomplete="off" spellcheck="false" placeholder="site-a">
+        </div>
+        <div class="field">
+          <label for="s-type" data-i18n="sinks.type">Type</label>
+          <select id="s-type" name="type">
+            <option value="influxdb" data-i18n="sinks.type_influxdb">InfluxDB v1 (line protocol)</option>
+            <option value="otlp" data-i18n="sinks.type_otlp">OTLP/HTTP (OpenTelemetry)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="s-url" data-i18n="sinks.url">URL</label>
+          <input id="s-url" name="url" type="url" autocomplete="off" spellcheck="false">
+          <p class="hint" id="s-url-hint"></p>
+          <p class="notice notice-warn" id="s-url-warning" hidden data-i18n="sinks.url_changed_warning">Changing the URL clears the saved password and token. Enter them again.</p>
+        </div>
+        <div class="field" data-for="influxdb">
+          <label for="s-db" data-i18n="sinks.db">Database</label>
+          <input id="s-db" name="db" type="text" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="s-username" data-i18n="sinks.username">Username</label>
+            <input id="s-username" name="username" type="text" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="s-password" data-i18n="sinks.secret">Password</label>
+            <input id="s-password" name="password" type="password" autocomplete="new-password">
+          </div>
+        </div>
+        <p class="hint" data-i18n="sinks.basic_auth_hint">Basic authentication. Leave both empty for none.</p>
+        <div class="field" data-for="otlp">
+          <label for="s-token" data-i18n="sinks.token">Bearer token</label>
+          <input id="s-token" name="token" type="password" autocomplete="off">
+        </div>
+        <div class="field" data-for="influxdb">
+          <label for="s-credential_id" data-i18n="sinks.credential_id">Credential ID</label>
+          <input id="s-credential_id" name="credential_id" type="text" autocomplete="off" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000">
+          <p class="hint" data-i18n="sinks.credential_id_hint">UUID written as the credential_id tag. Required when the sink is enabled.</p>
+        </div>
+        <div class="field">
+          <label class="check">
+            <input id="s-enabled" name="enabled" type="checkbox">
+            <span data-i18n="sinks.enabled">Enabled</span>
+          </label>
+        </div>
+        <div id="sink-form-result" class="result" hidden></div>
+        <div class="actions">
+          <button type="button" class="btn" id="sink-cancel" data-i18n="common.cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" data-i18n="common.save">Save</button>
+        </div>
+      </form>
+    </dialog>
+  </section>
+
+  <section id="tab-topology" class="panel" data-panel="topology" hidden>
+    <div id="topology-root"></div>
+  </section>
+</main>
+
+<footer class="footer">
+  <span id="version" class="muted"></span>
+  <span id="updated" class="muted"></span>
+</footer>
+</body>
+</html>
