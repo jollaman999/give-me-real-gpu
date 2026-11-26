@@ -127,11 +127,22 @@ func EntityID(name, override string) string {
 }
 
 // AllVMs returns every VM, ordered by hypervisor and then by GPU.
+// Null entries, which Validate reports, are skipped.
 func (t *Topology) AllVMs() []*VM {
 	var out []*VM
 	for _, h := range t.Hypervisors {
+		if h == nil {
+			continue
+		}
 		for _, g := range h.GPUs {
-			out = append(out, g.VMs...)
+			if g == nil {
+				continue
+			}
+			for _, vm := range g.VMs {
+				if vm != nil {
+					out = append(out, vm)
+				}
+			}
 		}
 	}
 	return out
@@ -140,7 +151,7 @@ func (t *Topology) AllVMs() []*VM {
 // HypervisorByName finds a hypervisor by hostname. Returns nil if there is none.
 func (t *Topology) HypervisorByName(name string) *Hypervisor {
 	for _, h := range t.Hypervisors {
-		if h.Hostname == name {
+		if h != nil && h.Hostname == name {
 			return h
 		}
 	}
@@ -150,7 +161,7 @@ func (t *Topology) HypervisorByName(name string) *Hypervisor {
 // FlavorByID finds a flavor by id. Returns nil if there is none.
 func (t *Topology) FlavorByID(id string) *Flavor {
 	for _, f := range t.Flavors {
-		if f.ID == id {
+		if f != nil && f.ID == id {
 			return f
 		}
 	}
