@@ -6,33 +6,15 @@ services:
         VERSION: ${VERSION:-dev}
     image: give-me-real-gpu:${VERSION:-dev}
     ports:
+      # Fake OpenStack API. The management platform connects here, so it is published on the LAN.
       - "15000:15000"
+      # Settings UI and API. There is no login, so it is published on this PC only.
+      # To use it from another PC: ssh -L 15080:localhost:15080 <host>, then open http://localhost:15080/
+      - "127.0.0.1:15080:15080"
     volumes:
-      # Fail instead of letting docker create a config.json directory when the file is missing.
-      - type: bind
-        source: ./config.json
-        target: /etc/give-me-real-gpu/config.json
-        read_only: true
-        bind:
-          create_host_path: false
-    # Passwords and credential ids can be given as EMU_* variables here. The file is optional.
-    env_file:
-      - path: emulator.env
-        required: false
+      # Settings, sinks and topology (give-me-real-gpu.db). The image runs with -data /data.
+      - data:/data
     restart: unless-stopped
 
-  # InfluxDB for local testing. Started only with `docker compose --profile local up`.
-  # Point the emulator sink url at http://influxdb:8086.
-  influxdb:
-    image: influxdb:1.11.8
-    profiles: ["local"]
-    ports:
-      - "18086:8086"
-    environment:
-      INFLUXDB_DB: telegraf
-      INFLUXDB_HTTP_AUTH_ENABLED: "false"
-    volumes:
-      - influxdb-data:/var/lib/influxdb
-
 volumes:
-  influxdb-data:
+  data:

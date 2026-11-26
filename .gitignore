@@ -1,4 +1,6 @@
-# Real settings (contain passwords and credential ids)
+# Local run data (settings DB with passwords and credential ids)
+/data/
+# Settings files from versions before the web UI (contain passwords and credential ids)
 config.json
 emulator.env
 /bin/

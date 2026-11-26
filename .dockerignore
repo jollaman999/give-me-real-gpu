@@ -1,6 +1,7 @@
 .git
 .claude
 bin
+data
 config.json
 emulator.env
 *.md
