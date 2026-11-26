@@ -2,6 +2,8 @@
 
 # give-me-real-gpu
 
+![Settings UI demo](docs/demo.gif)
+
 An emulator that fills GPU monitoring screens without real GPU servers.
 
 When you develop or test a management platform that integrates with OpenStack, together with a GPU monitoring server,
@@ -257,27 +259,11 @@ Without Docker, run it with a data directory of your choice. Keep the settings p
 go run ./cmd/give-me-real-gpu -data ./data -ui-listen 127.0.0.1:15080
 ```
 
-## Upgrading from older versions
-
-Versions before the settings UI read `config.json`, `EMU_*` environment variables and the `-config` flag.
-None of them is read any more and nothing is imported, so enter the values again in the settings UI after the upgrade.
-Metrics are not written until the sinks are entered again.
-
-| Before | Now |
-|--------|-----|
-| `advertise_host`, `openstack.password`, `openstack.token_ttl`, `interval`, `seed`, `xid_rate`, `dry_run` | General |
-| `sinks[]` | Sinks, type `influxdb`, version v1. Type the passwords again |
-| `topology_file` | Topology, JSON view: paste the file, Apply, Save |
-| `listen` | The `-listen` flag |
-| `EMU_*` environment variables | Not supported. Enter the values in the settings UI |
-
-The per-sink seed is now `seed + sink id` instead of `seed + index`, so the same `seed` gives different values than before.
-compose no longer mounts `config.json` or reads `emulator.env`. Delete them once moved, since they hold passwords.
-
 ## Settings UI
 
-The settings UI is served on `-ui-listen` (default `:15080`) under `/ui/`. It is in English and Korean: the first visit
-follows the browser language, and the language you pick is remembered.
+The settings UI is served on `-ui-listen` (default `:15080`) under `/ui/`. It is in English and Korean.
+The top bar has a language select and a light/dark theme switch. On the first visit the language follows the browser
+and the theme follows the OS setting; what you pick is remembered in the browser.
 
 | Tab | What it does |
 |-----|--------------|
@@ -778,6 +764,9 @@ make up / make down
 
 Besides the Go standard library it uses echo for the settings UI server, and gorm with a pure Go sqlite driver for the
 settings database (no cgo). The image is built on `golang:1.27-alpine` and runs on `gcr.io/distroless/static-debian12:nonroot`.
+
+To record the demo GIF at the top of this page (`docs/demo.gif`) again, run `tools/demo/run.sh`. It needs node, ffmpeg
+and Chrome; see `tools/demo/README.md`.
 
 ## Caveats
 

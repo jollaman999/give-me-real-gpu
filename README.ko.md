@@ -2,6 +2,8 @@
 
 # give-me-real-gpu
 
+![설정 화면 데모](docs/demo.gif)
+
 실제 GPU 서버 없이 GPU 모니터링 화면을 채워 주는 에뮬레이터입니다.
 
 OpenStack 을 연동하는 관리 플랫폼과 GPU 모니터링 서버를 함께 개발하거나 테스트할 때,
@@ -255,27 +257,11 @@ Docker 없이 돌릴 때는 데이터 디렉터리를 정해서 실행합니다.
 go run ./cmd/give-me-real-gpu -data ./data -ui-listen 127.0.0.1:15080
 ```
 
-## 이전 버전에서 옮기기
-
-설정 화면이 생기기 전 버전은 `config.json`, `EMU_*` 환경 변수, `-config` 플래그를 읽었습니다.
-지금은 이 중 아무것도 읽지 않고 가져오지도 않으므로, 업그레이드한 뒤 설정 화면에서 값을 다시 넣습니다.
-sink 를 다시 넣기 전까지는 메트릭을 쓰지 않습니다.
-
-| 이전 | 지금 |
-|------|------|
-| `advertise_host`, `openstack.password`, `openstack.token_ttl`, `interval`, `seed`, `xid_rate`, `dry_run` | 일반 탭 |
-| `sinks[]` | Sink 탭, 종류 `influxdb`, 버전 v1. 비밀번호도 다시 입력합니다 |
-| `topology_file` | 토폴로지 탭의 JSON 보기: 파일 내용을 붙여 넣고 적용한 뒤 저장 |
-| `listen` | `-listen` 플래그 |
-| `EMU_*` 환경 변수 | 지원하지 않습니다. 설정 화면에서 넣습니다 |
-
-sink 별 시드는 `seed + 순번` 에서 `seed + sink id` 로 바뀌었으므로 `seed` 가 같아도 값은 예전과 다릅니다.
-compose 는 더 이상 `config.json` 을 마운트하거나 `emulator.env` 를 읽지 않습니다. 비밀번호가 들어 있으니 옮긴 뒤 지웁니다.
-
 ## 설정 화면
 
-설정 화면은 `-ui-listen`(기본 `:15080`)의 `/ui/` 에서 열립니다. 영어와 한국어를 지원하며, 처음에는 브라우저 언어를
-따르고 고른 언어는 기억합니다.
+설정 화면은 `-ui-listen`(기본 `:15080`)의 `/ui/` 에서 열립니다. 영어와 한국어를 지원합니다.
+상단에 언어 선택 목록과 밝은/어두운 테마 스위치가 있습니다. 처음에는 언어는 브라우저 언어를, 테마는 OS 설정을 따르고,
+고른 값은 브라우저에 기억합니다.
 
 | 탭 | 하는 일 |
 |-----|---------|
@@ -771,6 +757,9 @@ make up / make down
 
 Go 표준 라이브러리 밖에서는 설정 화면 서버에 echo 를, 설정 DB 에 gorm 과 순수 Go sqlite 드라이버(cgo 없음)를 씁니다.
 이미지는 `golang:1.27-alpine` 에서 빌드하고 `gcr.io/distroless/static-debian12:nonroot` 에서 실행합니다.
+
+이 문서 맨 위의 데모 GIF(`docs/demo.gif`)를 다시 만들려면 `tools/demo/run.sh` 를 실행합니다. node, ffmpeg, Chrome 이
+필요하며 자세한 것은 `tools/demo/README.md` 에 있습니다.
 
 ## 주의할 점
 
