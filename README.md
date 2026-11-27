@@ -38,6 +38,7 @@ Ids are derived deterministically from names and stay the same across restarts.
 | emu-pt-02 | PASSTHROUGH | A100-PCIE-40GB x4 | 4 |
 
 With passthrough only one VM can use a GPU (a physical constraint). Every name has the `emu-` prefix so it stands apart from real nodes.
+Each default node uses one GPU type, but a node can mix them: each GPU can have its own type (see [Custom topology](#custom-topology)).
 
 To see the full default topology (ids, IPs and flavors included):
 
@@ -58,30 +59,31 @@ in the topology acts as one collection agent and puts these global tags on its r
 | `credential_id` | `credential_id` of the sink | `credential_id` of the sink |
 | `cloud_service` | `openstack` | `openstack` |
 | `type` | `host` | `vm` |
-| `gpu_type` | `BARE_METAL` on VGPU nodes, `MIG` on MIG nodes, `NONE` on passthrough nodes | `VGPU`, `MIG` or `PASSTHROUGH` (mode of its hypervisor) |
+| `gpu_type` | `MIG` when any GPU of the node is a MIG GPU, otherwise `BARE_METAL` when any is a vGPU GPU, `NONE` when every GPU is passthrough | `VGPU`, `MIG` or `PASSTHROUGH` (type of the GPU the VM uses) |
 | `collection_type` | `agent` | `agent` |
 | `host` | hypervisor hostname | VM name |
 | `time_diff` | `0` | `0` or `-1`, fixed per VM. The timestamps of that VM are shifted by the same number of seconds |
 | `project_id` | not set | project id of the topology |
 
-The hypervisor `gpu_type` follows how the monitoring server detects it from `nvidia-smi -q -x`: a vGPU host driver reports
-`Host VGPU`, which falls back to `BARE_METAL`, and a passthrough host has no nvidia driver, which gives `NONE`.
+The hypervisor `gpu_type` follows how the monitoring server detects it from `nvidia-smi -q -x`, once for the whole node:
+MIG mode on any GPU gives `MIG`; otherwise a vGPU host driver reports `Host VGPU`, which falls back to `BARE_METAL`;
+passthrough GPUs are bound to vfio-pci and do not show up, so a node with only passthrough GPUs has empty output, which gives `NONE`.
 
 Field types are `i` (integer), `f` (float) and `s` (string). "every" is every collection; 60s and 5m rows are written on
 the first collection of each new 60 second or 5 minute slot (the first collection after start includes both).
 
 | Measurement (kind) | Written by | Interval | Tags besides the global ones | Fields |
 |--------------------|------------|----------|------------------------------|--------|
-| `dcgm` physical GPU | VGPU and MIG hypervisors, one per GPU (passthrough hypervisors write none) | every | `index`, `gpu`, `pstate` (`P0`/`P8`), `name`, `modelName`, `arch`, `UUID` (`GPU-...`), `compute_mode`, `pci_bus_id`, `DCGM_FI_DEV_PCI_BUSID`, `DCGM_FI_DRIVER_VERSION`, `DCGM_FI_DEV_VBIOS_VERSION`, `DCGM_FI_NVML_VERSION` | `gpu_temp`, `power_usage`, `fb_total`, `fb_used`, `fb_free`, `sm_clock`, `mem_clock`, `clocks_event_reasons`, `pcie_replay_counter`, `ecc_sbe_vol_total`, `ecc_dbe_vol_total`, `ecc_sbe_agg_total`, `ecc_dbe_agg_total` (f), `pstate` (i). Not on MIG: `gpu_util`, `mem_copy_util`, `enc_util`, `dec_util` (f). HBM boards (A100, H100, H200): `memory_temp` (f). Turing, Volta, Pascal: `retired_pages_dbe`, `retired_pages_pending` (f); other architectures: `correctable_remapped_rows`, `uncorrectable_remapped_rows`, `row_remap_failure`, `row_remap_pending` (f) |
-| `dcgm` GPM, device | MIG hypervisors, one per GPU | every | same as the physical GPU row | `gpu_util`, `sm_occupancy`, `graphics_util`, `dram_bw_util`, `fp32_util`, `fp16_util`, `fp64_util` (f), `server_time` (i) |
-| `dcgm` GPM, MIG instance | MIG hypervisors, one per assigned instance | every | same as the vGPU/MIG VM row below (`type=vm`) | same as the GPM device row |
-| `dcgm` vGPU/MIG VM | VGPU and MIG hypervisors, one per VM (written by the mapping script on the hypervisor) | 60s | its own set instead of the global tags: `uuid=<credential_id>:<server id>`, `type=vm`, `host=<VM name>`, `gpu_type` (`VGPU` or `MIG`), `credential_id`, `cloud_service`, `collection_type`, `time_diff=0`, `UUID` (vGPU uuid), `gpu` (position of the vGPU on its GPU), `modelName` (vGPU type name), `gpu_instance_id` (`N/A` on VGPU), `physical_gpu_uuid`, `pci_bus_id`, `DCGM_FI_DEV_PCI_BUSID`, `DCGM_FI_DRIVER_VERSION`, `DCGM_FI_DEV_VBIOS_VERSION`. No `project_id` | `fb_total`, `fb_used`, `fb_free`, `vgpu_license_status`, `mig_mode` (f), `pstate`, `server_time` (i). VGPU only: `gpu_util`, `mem_copy_util`, `enc_util`, `dec_util` (f) |
+| `dcgm` physical GPU | hypervisors, one per vGPU or MIG GPU (passthrough GPUs get none) | every | `index`, `gpu`, `pstate` (`P0`/`P8`), `name`, `modelName`, `arch`, `UUID` (`GPU-...`), `compute_mode`, `pci_bus_id`, `DCGM_FI_DEV_PCI_BUSID`, `DCGM_FI_DRIVER_VERSION`, `DCGM_FI_DEV_VBIOS_VERSION`, `DCGM_FI_NVML_VERSION` | `gpu_temp`, `power_usage`, `fb_total`, `fb_used`, `fb_free`, `sm_clock`, `mem_clock`, `clocks_event_reasons`, `pcie_replay_counter`, `ecc_sbe_vol_total`, `ecc_dbe_vol_total`, `ecc_sbe_agg_total`, `ecc_dbe_agg_total` (f), `pstate` (i). Not on MIG: `gpu_util`, `mem_copy_util`, `enc_util`, `dec_util` (f). HBM boards (A100, H100, H200): `memory_temp` (f). Turing, Volta, Pascal: `retired_pages_dbe`, `retired_pages_pending` (f); other architectures: `correctable_remapped_rows`, `uncorrectable_remapped_rows`, `row_remap_failure`, `row_remap_pending` (f) |
+| `dcgm` GPM, device | hypervisors, one per MIG GPU | every | same as the physical GPU row | `gpu_util`, `sm_occupancy`, `graphics_util`, `dram_bw_util`, `fp32_util`, `fp16_util`, `fp64_util` (f), `server_time` (i) |
+| `dcgm` GPM, MIG instance | hypervisors, one per assigned instance of a MIG GPU | every | same as the vGPU/MIG VM row below (`type=vm`) | same as the GPM device row |
+| `dcgm` vGPU/MIG VM | hypervisors, one per VM on a vGPU or MIG GPU (written by the mapping script on the hypervisor) | 60s | its own set instead of the global tags: `uuid=<credential_id>:<server id>`, `type=vm`, `host=<VM name>`, `gpu_type` (`VGPU` or `MIG`), `credential_id`, `cloud_service`, `collection_type`, `time_diff=0`, `UUID` (vGPU uuid), `gpu` (position of the vGPU on its GPU), `modelName` (vGPU type name), `gpu_instance_id` (`N/A` on a vGPU GPU), `physical_gpu_uuid`, `pci_bus_id`, `DCGM_FI_DEV_PCI_BUSID`, `DCGM_FI_DRIVER_VERSION`, `DCGM_FI_DEV_VBIOS_VERSION`. No `project_id` | `fb_total`, `fb_used`, `fb_free`, `vgpu_license_status`, `mig_mode` (f), `pstate`, `server_time` (i). vGPU GPUs only: `gpu_util`, `mem_copy_util`, `enc_util`, `dec_util` (f) |
 | `dcgm` passthrough guest | passthrough VMs | every | the physical GPU tags as the guest sees them (`index=0`, guest PCI address, guest driver) plus `DCGM_FI_CUDA_DRIVER_VERSION` | same as the physical GPU row, with the utilization fields |
 | `dcgm` cuda_probe | VGPU and MIG VMs | 5m | `UUID` (vGPU uuid without `GPU-`), `DCGM_FI_CUDA_DRIVER_VERSION` | `cuda_probe` (i, always 1), `server_time` (i) |
 | `dcgm` XID | a passthrough VM (`uuid` of the VM), or the hypervisor of a VGPU/MIG VM (`uuid` of the hypervisor) | probability `xid_rate` per GPU VM per collection | no global tags, only `err_code`, `DCGM_FI_DEV_PCI_BUSID` (`0000:bb:dd`), `uuid`, `UUID`, `modelName`, `DCGM_FI_DRIVER_VERSION` | `xid_errors` (f, the XID code), `err_msg` (s, the kernel `NVRM: Xid` line) |
-| `gpu_vm_mapping` vGPU/MIG assigned | VGPU and MIG hypervisors, one per VM | 60s | `openstack_vm_name`, `openstack_vm_uuid`, `host_bdf`, `guest_bdf=vgpu`, `vendor_id=10de`, `device_id`, `status=assigned`, `driver=nvidia`, `gpu_type` (`vgpu` or `mig`, replaces the global value), `vgpu_uuid` | `mapped` (i, 1), `vgpu_fb_mb`, `vgpu_max_instances`, `vgpu_active_instances`, `server_time` (i), `vgpu_profile`, `vgpu_model_name`, `gpu_uuid` (s) |
-| `gpu_vm_mapping` passthrough assigned | passthrough hypervisors, one per assigned GPU | 60s | as above without `vgpu_uuid`; `guest_bdf` is the guest PCI address, `driver=vfio-pci`, `gpu_type=passthrough` | `mapped` (i, 1), `server_time` (i) |
-| `gpu_vm_mapping` unassigned | any hypervisor, one per GPU with no VM | 60s | `openstack_vm_name=N/A`, `openstack_vm_uuid=N/A`, `guest_bdf=N/A`, `host_bdf`, `vendor_id`, `device_id`, `status=unassigned`, `driver` (`nvidia` or `vfio-pci`), `gpu_type` (lower case mode) | `mapped` (i, 0), `vgpu_active_instances` (i, 0), `server_time` (i), `gpu_uuid` (s, not on passthrough) |
+| `gpu_vm_mapping` vGPU/MIG assigned | hypervisors, one per VM on a vGPU or MIG GPU | 60s | `openstack_vm_name`, `openstack_vm_uuid`, `host_bdf`, `guest_bdf=vgpu`, `vendor_id=10de`, `device_id`, `status=assigned`, `driver=nvidia`, `gpu_type` (`vgpu` or `mig`, the type of that GPU, replaces the global value), `vgpu_uuid` | `mapped` (i, 1), `vgpu_fb_mb`, `vgpu_max_instances`, `vgpu_active_instances`, `server_time` (i), `vgpu_profile`, `vgpu_model_name`, `gpu_uuid` (s) |
+| `gpu_vm_mapping` passthrough assigned | hypervisors, one per assigned passthrough GPU | 60s | as above without `vgpu_uuid`; `guest_bdf` is the guest PCI address, `driver=vfio-pci`, `gpu_type=passthrough` | `mapped` (i, 1), `server_time` (i) |
+| `gpu_vm_mapping` unassigned | any hypervisor, one per GPU with no VM | 60s | `openstack_vm_name=N/A`, `openstack_vm_uuid=N/A`, `guest_bdf=N/A`, `host_bdf`, `vendor_id`, `device_id`, `status=unassigned`, `driver` (`nvidia` or `vfio-pci`), `gpu_type` (lower case type of that GPU) | `mapped` (i, 0), `vgpu_active_instances` (i, 0), `server_time` (i), `gpu_uuid` (s, not on passthrough GPUs) |
 | `cpu` | all agents, one per cpu plus `cpu-total` | every | `cpu` (`cpu0`, `cpu1`, ..., `cpu-total`) | `usage_user`, `usage_system`, `usage_idle`, `usage_nice`, `usage_iowait`, `usage_irq`, `usage_softirq`, `usage_steal` (f), `server_time` (i) |
 | `mem` | all agents | every | - | `total`, `used`, `free`, `cached`, `buffered`, `available`, `active`, `inactive`, `shared` (i), `used_percent`, `available_percent` (f), `server_time` (i) |
 | `swap` | all agents (`total` is 0 on VMs) | every | - | `total`, `used`, `free` (i), `used_percent` (f), `server_time` (i) |
@@ -161,7 +163,7 @@ monotonic sum that starts at the boot of the node (or the start of the process).
 | `nvidia_smi.pstate` | gauge | `index`, `uuid`, `name` | every GPU an agent sees | `nvidia_smi_pstate` |
 | `nvidia_smi.temperature.gpu`, `nvidia_smi.power.draw` | gauge, `Cel` and `W` | `index`, `uuid`, `name` | the board owner: hypervisors and passthrough guests | `nvidia_smi_temperature_gpu_celsius`, `nvidia_smi_power_draw_watts` |
 | `nvidia_smi.temperature.memory` | gauge, `Cel` | `index`, `uuid`, `name` | the board owner, HBM boards (A100, H100, H200) | `nvidia_smi_temperature_memory_celsius` |
-| `nvidia_smi.fan.speed` | gauge, `%` | `index`, `uuid`, `name` | the board owner, actively cooled boards (RTX, Quadro, GeForce). None in the default topology | `nvidia_smi_fan_speed_percent` |
+| `nvidia_smi.fan.speed` | gauge, `%` | `index`, `uuid`, `name` | the board owner, actively cooled boards (RTX, Quadro, GeForce, but not Server Edition boards). None in the default topology | `nvidia_smi_fan_speed_percent` |
 | `nvidia_smi.clocks_event_reasons.active`, `nvidia_smi.ecc.errors.corrected.volatile.total` and the other three `ecc.errors.*` | gauge | `index`, `uuid`, `name` | the board owner | `nvidia_smi_ecc_errors_corrected_volatile_total` |
 | `nvidia_smi.retired_pages.double_bit.count`, `.pending` | gauge | `index`, `uuid`, `name` | the board owner, Turing, Volta and Pascal | `nvidia_smi_retired_pages_pending` |
 | `nvidia_smi.remapped_rows.correctable`, `.uncorrectable`, `.pending`, `.failure` | gauge | `index`, `uuid`, `name` | the board owner, other architectures | `nvidia_smi_remapped_rows_pending` |
@@ -170,9 +172,9 @@ monotonic sum that starts at the boot of the node (or the start of the process).
 
 Which GPUs an agent sees with nvidia-smi:
 
-- VGPU and MIG hypervisors: every physical GPU, with its `GPU-...` uuid and model name.
-- Passthrough hypervisors: none, because the host has no NVIDIA driver (`driver_version` is empty). With a driver
-  version set, the host sees the GPUs no VM uses.
+- Hypervisors: every vGPU and MIG GPU, with its `GPU-...` uuid and model name. Passthrough GPUs are bound to vfio-pci,
+  with or without a VM, so the host does not see them.
+- A hypervisor whose GPUs are all passthrough sees none, because the host has no NVIDIA driver (`driver_version` is empty).
 - vGPU VM: one GPU at `index=0` with uuid `GPU-<vgpu_uuid>`, the vGPU type as `name` and the vGPU framebuffer as memory.
   No temperature, power, ECC or row remapping, since the guest does not own the board.
 - MIG VM: like a vGPU VM, without `utilization.*`.
@@ -310,7 +312,7 @@ curl -s -X PUT http://localhost:15080/api/v1/settings \
 | `GET /api/v1/tag-keys` | The tag keys (`influxdb`) and label keys (`otlp`) the saved topology sends before any rule, with an example value each. See [Tag and label rules](#tag-and-label-rules) |
 | `GET`, `PUT /api/v1/topology`, `POST /api/v1/topology/reset` | The saved topology. `PUT` saves it as sent, without filling empty fields |
 | `POST /api/v1/topology/fill` | Fills the empty fields of the topology in the body and lists its problems. Saves nothing |
-| `GET /api/v1/topology/catalog` | GPU models, profiles and flavors the editor offers |
+| `GET /api/v1/topology/catalog` | GPU models, profiles and flavors the editor offers, with the types (`modes`) and MIG slice count (`max_mig_slices`) of each model |
 
 A rejected save answers 400 with every problem, for example
 `{"error":"validation failed","problems":["sink \"y\": db is empty"]}`. Unknown keys are rejected as typos.
@@ -493,6 +495,7 @@ The section has two parts:
   first. Hovering over a chip shows an example value and where the key is sent; clicking it adds a row that renames or
   drops that key. The chips show what the rules do: a renamed key as `host → hostname`, a dropped key struck out, a key
   whose value an `add` replaces as `key = value`, and a key that only an `add` brings as `+ key = value`.
+  The key field of a row offers the same keys in a list: pick one, or type any key.
 
 The UI saves the change rows first, in their order, and the fixed tags after them, so a fixed key=value is always in the
 output. A sink saved through the API with an `add` in the middle of the list is shown the same way and saved in that order
@@ -558,27 +561,48 @@ The tab has three views: **Editor**, **JSON** and **Entity IDs**.
 
 - Drag a node (vGPU, MIG or Passthrough) from the palette onto the canvas, a GPU model onto a node, and a VM onto a GPU.
   On a MIG GPU, drop the VM on a GPU instance slot or on the free area to create an instance for it.
+- The kind of node you drag is its default type: the type a new GPU on it gets. Every GPU model in the list goes on
+  any node. A new GPU takes the node's default type when the model supports it, and otherwise the first type the
+  model supports (see the table below). A node whose GPUs have different types shows one type tag per type in its header.
 - Drag a VM onto another GPU to move it. Drop a node, GPU or VM on the delete area of the palette to delete it.
+- Right-click a node, GPU or VM for a menu, or press Shift+F10 or the menu key on the focused one. A node's menu adds a GPU
+  of any model or deletes the node, a GPU's menu adds a VM, changes the GPU's type or deletes the GPU, and a VM's
+  menu deletes the VM. **Delete** deletes the selected node, GPU or VM.
 - A drop that breaks a rule is refused on the spot with the reason: a passthrough GPU takes one VM, a vGPU GPU takes
-  up to the profile's maximum, a MIG GPU has 7 slices, and a GPU model only goes on a node of a mode it supports.
-- Click a node, GPU or VM to edit it in **Properties**: names, sizes, IPs, flavor, vGPU profile, MIG instances and
-  `entity_id`. The mode of a node is set when it is created.
+  up to the profile's maximum, and the instances of a MIG GPU fit in the slices of its model (7 on A100 and H100,
+  4 on RTX PRO 6000 Blackwell).
+- Click a node, GPU or VM to edit it in **Properties**: names, sizes, IPs, flavor, the node's **Default type**, the
+  GPU's **Type**, vGPU profile, MIG instances with the vGPU type of each instance, and `entity_id`.
+- Changing a GPU's type keeps its VMs and fits them to the new type. A GPU that becomes MIG gets one instance of the
+  smallest profile per VM. VMs that do not fit (a second VM on a passthrough GPU, VMs past the profile's maximum,
+  VMs with no MIG slices left) are deleted, and a message names them.
 - Ids, uuids, addresses, bus ids, driver versions and flavors that are left empty are filled with the same deterministic
   rules the default topology uses (hypervisor IPs from `192.0.2.0/24`, VM IPs from `198.51.100.0/24` and `203.0.113.0/24`).
   Values you typed are kept.
 - Problems are shown next to the node, GPU or VM they belong to. **Save** refuses while there are problems.
   **Revert** reloads the saved topology. **Reset to default** replaces the saved topology with the six-node default and saves it at once.
 
-GPU models the editor offers, and the modes they can go in:
+GPU models the editor offers, and the types they can be used in:
 
-| GPU model | Modes | vGPU profiles | MIG profiles |
-|-----------|-------|---------------|--------------|
-| NVIDIA A10 | VGPU, PASSTHROUGH | NVIDIA A10-4Q | - |
-| Tesla T4 | VGPU, PASSTHROUGH | GRID T4-4Q | - |
-| NVIDIA A100-SXM4-80GB | MIG, PASSTHROUGH | - | 1g.10gb, 2g.20gb, 3g.40gb, 7g.80gb |
-| NVIDIA H100 80GB HBM3 | MIG, PASSTHROUGH | - | 1g.10gb, 3g.40gb |
-| NVIDIA L40S | PASSTHROUGH | - | - |
-| NVIDIA A100-PCIE-40GB | PASSTHROUGH | - | - |
+| GPU model | Types | vGPU profiles | MIG profiles | MIG slices |
+|-----------|-------|---------------|--------------|------------|
+| NVIDIA A10 | VGPU, PASSTHROUGH | NVIDIA A10-4Q | - | - |
+| Tesla T4 | VGPU, PASSTHROUGH | GRID T4-4Q | - | - |
+| NVIDIA A100-SXM4-80GB | MIG, PASSTHROUGH | - | 1g.10gb, 2g.20gb, 3g.40gb, 7g.80gb | 7 |
+| NVIDIA H100 80GB HBM3 | MIG, PASSTHROUGH | - | 1g.10gb, 3g.40gb | 7 |
+| NVIDIA L40S | PASSTHROUGH | - | - | - |
+| NVIDIA A100-PCIE-40GB | PASSTHROUGH | - | - | - |
+| NVIDIA RTX PRO 6000 Blackwell Server Edition | VGPU, MIG, PASSTHROUGH | DC-8Q to DC-96Q and DC-8C to DC-96C (8, 12, 16, 24, 32, 48 and 96 GB each), DC-24Q first | 1g.24gb, 2g.48gb, 4g.96gb | 4 |
+
+The first vGPU profile of a model is the one a new GPU gets. Each MIG profile lists the vGPU types an instance can
+carry, the first being the default: one per instance on A100 and H100, and a Q (graphics) and a C (compute) type on
+RTX PRO 6000 Blackwell (`DC-1-24Q` or `DC-1-24C` on 1g.24gb, `DC-2-48Q`/`C` on 2g.48gb, `DC-4-96Q`/`C` on 4g.96gb).
+
+The RTX PRO 6000 Blackwell is in this list only; the default topology does not use it. Its name, PCI device id (2bb5),
+memory, VBIOS and architecture, the memory and GI IDs (1, 2) of 2g.48gb and the form of the vGPU names come from a
+captured nvidia-smi output. The vGPU sizes and maximum counts follow NVIDIA's vGPU type table for this board.
+The memory of 1g.24gb and 4g.96gb and the GI IDs of 1g.24gb (3 to 6) are estimates, and the mdev type numbers
+(`nvidia-NNN`) are made up as for the other models.
 
 ### JSON view
 
@@ -609,7 +633,7 @@ Names are enough to start. This is one vGPU node with one A10 and one VM:
 ```
 
 Write `"mig_gpu_instance_id": -1` on every VM. 0 is a valid MIG GPU instance id, so a missing key is not taken as empty;
-on a MIG node -1 picks the first free instance. GPU `index` is not filled either, since 0 is a valid index.
+on a MIG GPU -1 picks the first free instance. GPU `index` is not filled either, since 0 is a valid index.
 
 ### A minimal topology
 
@@ -697,7 +721,36 @@ A MIG GPU has `mig_instances` instead of `profile`, and each of its VMs names th
 ```
 
 A passthrough GPU has neither. Its VM has no `vgpu_uuid` and `mig_gpu_instance_id` is `-1`.
-Passthrough nodes leave `driver_version` and `cuda_version` empty, since the host has no NVIDIA driver.
+A node whose GPUs are all passthrough leaves `driver_version` and `cuda_version` empty, since the host has no NVIDIA driver.
+
+A node can mix GPU types. `mode` on a GPU overrides the node's `mode`, which is then only the type of the GPUs that
+leave theirs empty (and the default type the editor gives new GPUs). This node has a vGPU, a MIG and a passthrough GPU;
+a MIG GPU needs its instances listed, here by `profile` alone:
+
+```json
+{
+  "hypervisors": [
+    {
+      "hostname": "emu-mix-01",
+      "mode": "VGPU",
+      "gpus": [
+        {"index": 0, "model_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+         "vms": [{"name": "emu-mix01-g0-1", "mig_gpu_instance_id": -1}]},
+        {"index": 1, "model_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition", "mode": "MIG",
+         "mig_instances": [{"gpu_instance_id": -1, "profile": "2g.48gb"}],
+         "vms": [{"name": "emu-mix01-g1-1", "mig_gpu_instance_id": -1}]},
+        {"index": 2, "model_name": "NVIDIA L40S", "mode": "PASSTHROUGH",
+         "vms": [{"name": "emu-mix01-g2-1", "mig_gpu_instance_id": -1}]}
+      ]
+    }
+  ]
+}
+```
+
+After Apply GPU 0 has the profile `DC-24Q`, GPU 1 has the instance 1 with `DC-2-48Q` and its VM uses it, and each VM
+has the type of its GPU. Apply leaves GPU 0's `mode` empty. The node gets a host driver because not every GPU is
+passthrough. Its hypervisor agent sends `gpu_type=MIG`, the hypervisor reads GPUs 0 and 1 with nvidia-smi but not GPU 2,
+and the `gpu_vm_mapping` rows have `gpu_type` `vgpu`, `mig` and `passthrough` (see [InfluxDB metrics](#influxdb-metrics)).
 
 ### Entity IDs
 
@@ -718,22 +771,23 @@ value, set **OTel entity_id** in Properties, or `entity_id` on the hypervisor or
 | `hypervisors[]` | `id`, `uuid` | nova hypervisor integer id and uuid |
 | `hypervisors[]` | `hostname` | `hypervisor_hostname` in nova and the `host` tag of host metrics |
 | `hypervisors[]` | `host_ip` | nova `host_ip` and the address in net metrics |
-| `hypervisors[]` | `mode` | `VGPU`, `MIG` or `PASSTHROUGH`. Also the `gpu_type` tag |
+| `hypervisors[]` | `mode` | `VGPU`, `MIG` or `PASSTHROUGH`. The type of the GPUs that set no `mode`, and the default type the editor gives new GPUs |
 | `hypervisors[]` | `vcpus`, `memory_mb`, `local_gb` | Physical resources reported by nova |
-| `hypervisors[]` | `driver_version`, `cuda_version` | Host NVIDIA driver and CUDA driver version (`13020` form). Empty on passthrough nodes |
+| `hypervisors[]` | `driver_version`, `cuda_version` | Host NVIDIA driver and CUDA driver version (`13020` form). Empty when every GPU is passthrough |
 | `gpus[]` | `index` | nvidia-smi index, from 0 |
 | `gpus[]` | `uuid` | `GPU-` followed by a UUID |
 | `gpus[]` | `bus_id`, `host_bdf` | PCI address in two forms: `00000000:18:00.0` and `18:00.0` (lower case) |
 | `gpus[]` | `model_name`, `device_id`, `memory_mib`, `vbios`, `arch` | Model, PCI device id (vendor is always 10de), framebuffer, VBIOS and architecture |
-| `gpus[]` | `profile` | VGPU nodes only: the vGPU type created on this GPU (`name`, mdev `type`, `framebuffer_mb`, `max_instances`) |
-| `gpus[]` | `mig_instances` | MIG nodes only: GPU instances (`gpu_instance_id`, `profile`, `slices`, `memory_mib`, `vgpu_profile`) |
+| `gpus[]` | `mode` | Optional. `VGPU`, `MIG` or `PASSTHROUGH`. Empty means the node's `mode` |
+| `gpus[]` | `profile` | vGPU GPUs only: the vGPU type created on this GPU (`name`, mdev `type`, `framebuffer_mb`, `max_instances`) |
+| `gpus[]` | `mig_instances` | MIG GPUs only: GPU instances (`gpu_instance_id`, `profile`, `slices`, `memory_mib`, `vgpu_profile`) |
 | `gpus[]` | `vms` | VMs using this GPU. `[]` means the GPU is unassigned |
 | `vms[]` | `id`, `name`, `instance_name` | nova server id, server name (also the `host` tag of VM metrics) and libvirt name |
-| `vms[]` | `hypervisor`, `gpu_index`, `mode` | Where the VM runs. Must match the node and GPU it is listed under |
+| `vms[]` | `hypervisor`, `gpu_index`, `mode` | Where the VM runs and its type. Must match the node, the GPU and the GPU's type it is listed under |
 | `vms[]` | `flavor_id` | Id of an entry in `flavors` |
 | `vms[]` | `ip` | Fixed ip |
 | `vms[]` | `vgpu_uuid` | mdev uuid of the vGPU (VGPU and MIG). Empty for passthrough |
-| `vms[]` | `mig_gpu_instance_id` | `gpu_instance_id` of the MIG instance it uses. `-1` on other nodes |
+| `vms[]` | `mig_gpu_instance_id` | `gpu_instance_id` of the MIG instance it uses. `-1` on other GPUs |
 | `vms[]` | `guest_bdf`, `guest_driver_version` | PCI address and NVIDIA driver inside the VM |
 | `vms[]` | `vcpus`, `memory_mb`, `disk_gb` | VM size |
 | `flavors[]` | `id`, `name`, `vcpus`, `ram_mb`, `disk_gb`, `extra_specs` | nova flavors. GPU flavors carry `resources:VGPU` or `pci_passthrough:alias` in `extra_specs` |
@@ -746,14 +800,16 @@ The editor, Apply and every save check these and list every problem found.
 - `project_id` and `user_name` are set. Unknown keys are treated as typos and rejected.
 - These are unique: hypervisor `hostname`, `id` and `uuid`; GPU `uuid`; GPU `index` and `bus_id` within a node;
   VM `name`, `id`, `instance_name` and `vgpu_uuid`; flavor `id` and `name`.
-- `mode` is `VGPU`, `MIG` or `PASSTHROUGH`, and each VM has the same `mode` as its node.
+- A node's `mode` is `VGPU`, `MIG` or `PASSTHROUGH`, a GPU's `mode` is empty or one of them, and each VM has the
+  same `mode` as the type of its GPU (the GPU's `mode`, or the node's when the GPU has none).
 - Each VM's `hypervisor` is the `hostname` of the node it is listed under, its `gpu_index` is the `index` of that GPU,
   and its `flavor_id` exists in `flavors`.
-- VGPU: every GPU has a `profile`, a GPU has at most `profile.max_instances` VMs, and every VM has a `vgpu_uuid`.
-- MIG: the `slices` of a GPU's instances add up to 7 or less, `gpu_instance_id` is unique within the GPU, every VM's
+- VGPU GPUs: every one has a `profile` and at most `profile.max_instances` VMs, and every VM has a `vgpu_uuid`.
+- MIG GPUs: the `slices` of the instances add up to the slice count of the model or less (7 on A100 and H100, 4 on
+  RTX PRO 6000 Blackwell, 7 for a model the catalog does not know), `gpu_instance_id` is unique within the GPU, every VM's
   `mig_gpu_instance_id` names an instance on its GPU, an instance has at most one VM, and every VM has a `vgpu_uuid`.
-- PASSTHROUGH: a GPU has at most one VM, and VMs have no `vgpu_uuid`.
-- On VGPU and PASSTHROUGH nodes `mig_gpu_instance_id` is `-1`.
+- PASSTHROUGH GPUs: at most one VM, and VMs have no `vgpu_uuid`.
+- On VGPU and PASSTHROUGH GPUs `mig_gpu_instance_id` is `-1`.
 
 Formats are not checked. Keep the forms the dump uses (UUIDs, 32 hex characters for `project_id` and `user_id`),
 because the management platform and the monitoring server store these values.

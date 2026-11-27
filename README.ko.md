@@ -38,6 +38,7 @@ id 는 이름에서 결정적으로 만들어지므로 재시작해도 바뀌지
 | emu-pt-02 | PASSTHROUGH | A100-PCIE-40GB x4 | 4 |
 
 passthrough 에서는 GPU 하나를 VM 하나만 쓸 수 있습니다(물리적 제약). 모든 이름에 `emu-` 접두사를 붙여 실제 노드와 구분됩니다.
+기본 노드는 저마다 GPU 유형 하나만 쓰지만, GPU 마다 유형을 따로 정해 한 노드에 섞을 수도 있습니다([토폴로지 직접 만들기](#토폴로지-직접-만들기) 참고).
 
 기본 토폴로지 전체(id, IP, flavor 포함)를 보려면 다음을 실행합니다.
 
@@ -58,30 +59,31 @@ go run ./cmd/give-me-real-gpu -dump-topology
 | `credential_id` | sink 의 `credential_id` | sink 의 `credential_id` |
 | `cloud_service` | `openstack` | `openstack` |
 | `type` | `host` | `vm` |
-| `gpu_type` | VGPU 노드는 `BARE_METAL`, MIG 노드는 `MIG`, passthrough 노드는 `NONE` | `VGPU`, `MIG`, `PASSTHROUGH` 중 하나 (소속 hypervisor 의 방식) |
+| `gpu_type` | 노드에 MIG GPU 가 하나라도 있으면 `MIG`, 없고 vGPU GPU 가 있으면 `BARE_METAL`, 모든 GPU 가 passthrough 면 `NONE` | `VGPU`, `MIG`, `PASSTHROUGH` 중 하나 (VM 이 쓰는 GPU 의 유형) |
 | `collection_type` | `agent` | `agent` |
 | `host` | hypervisor hostname | VM 이름 |
 | `time_diff` | `0` | VM 마다 고정된 `0` 또는 `-1`. 그 VM 의 타임스탬프도 같은 초만큼 밀립니다 |
 | `project_id` | 없음 | 토폴로지의 project id |
 
-hypervisor 의 `gpu_type` 은 모니터링 서버가 `nvidia-smi -q -x` 로 판정하는 방식을 따릅니다. vGPU 호스트 드라이버는
-`Host VGPU` 를 보고하므로 `BARE_METAL` 로 떨어지고, passthrough 호스트는 nvidia 드라이버가 없어 `NONE` 이 됩니다.
+hypervisor 의 `gpu_type` 은 모니터링 서버가 `nvidia-smi -q -x` 로 노드 전체를 한 번에 판정하는 방식을 따릅니다.
+MIG 를 켠 GPU 가 하나라도 있으면 `MIG` 이고, 아니면 vGPU 호스트 드라이버가 `Host VGPU` 를 보고하므로 `BARE_METAL` 로 떨어집니다.
+passthrough GPU 는 vfio-pci 에 묶여 보이지 않으므로, passthrough GPU 만 있는 노드는 출력이 비어 `NONE` 이 됩니다.
 
 필드 타입은 `i`(정수), `f`(실수), `s`(문자열)입니다. "매번" 은 수집할 때마다이고, 60초·5분 행은 새 60초 또는 5분 구간의
 첫 수집에서 씁니다(시작 직후 첫 수집에는 둘 다 들어갑니다).
 
 | measurement (종류) | 쓰는 쪽 | 주기 | 전역 외 태그 | 필드 |
 |--------------------|---------|------|--------------|------|
-| `dcgm` 물리 GPU | VGPU·MIG hypervisor, GPU 마다 하나 (passthrough hypervisor 는 쓰지 않음) | 매번 | `index`, `gpu`, `pstate` (`P0`/`P8`), `name`, `modelName`, `arch`, `UUID` (`GPU-...`), `compute_mode`, `pci_bus_id`, `DCGM_FI_DEV_PCI_BUSID`, `DCGM_FI_DRIVER_VERSION`, `DCGM_FI_DEV_VBIOS_VERSION`, `DCGM_FI_NVML_VERSION` | `gpu_temp`, `power_usage`, `fb_total`, `fb_used`, `fb_free`, `sm_clock`, `mem_clock`, `clocks_event_reasons`, `pcie_replay_counter`, `ecc_sbe_vol_total`, `ecc_dbe_vol_total`, `ecc_sbe_agg_total`, `ecc_dbe_agg_total` (f), `pstate` (i). MIG 가 아닐 때만: `gpu_util`, `mem_copy_util`, `enc_util`, `dec_util` (f). HBM 보드(A100, H100, H200): `memory_temp` (f). Turing, Volta, Pascal: `retired_pages_dbe`, `retired_pages_pending` (f), 그 밖의 아키텍처: `correctable_remapped_rows`, `uncorrectable_remapped_rows`, `row_remap_failure`, `row_remap_pending` (f) |
-| `dcgm` GPM, 장치 | MIG hypervisor, GPU 마다 하나 | 매번 | 물리 GPU 행과 같음 | `gpu_util`, `sm_occupancy`, `graphics_util`, `dram_bw_util`, `fp32_util`, `fp16_util`, `fp64_util` (f), `server_time` (i) |
-| `dcgm` GPM, MIG instance | MIG hypervisor, 할당된 instance 마다 하나 | 매번 | 아래 vGPU/MIG VM 행과 같음 (`type=vm`) | GPM 장치 행과 같음 |
-| `dcgm` vGPU/MIG VM | VGPU·MIG hypervisor, VM 마다 하나 (hypervisor 의 매핑 스크립트가 씀) | 60초 | 전역 태그 대신 자체 묶음: `uuid=<credential_id>:<server id>`, `type=vm`, `host=<VM 이름>`, `gpu_type` (`VGPU` 또는 `MIG`), `credential_id`, `cloud_service`, `collection_type`, `time_diff=0`, `UUID` (vGPU uuid), `gpu` (GPU 안에서 vGPU 의 순번), `modelName` (vGPU 타입 이름), `gpu_instance_id` (VGPU 는 `N/A`), `physical_gpu_uuid`, `pci_bus_id`, `DCGM_FI_DEV_PCI_BUSID`, `DCGM_FI_DRIVER_VERSION`, `DCGM_FI_DEV_VBIOS_VERSION`. `project_id` 없음 | `fb_total`, `fb_used`, `fb_free`, `vgpu_license_status`, `mig_mode` (f), `pstate`, `server_time` (i). VGPU 만: `gpu_util`, `mem_copy_util`, `enc_util`, `dec_util` (f) |
+| `dcgm` 물리 GPU | hypervisor, vGPU·MIG GPU 마다 하나 (passthrough GPU 는 없음) | 매번 | `index`, `gpu`, `pstate` (`P0`/`P8`), `name`, `modelName`, `arch`, `UUID` (`GPU-...`), `compute_mode`, `pci_bus_id`, `DCGM_FI_DEV_PCI_BUSID`, `DCGM_FI_DRIVER_VERSION`, `DCGM_FI_DEV_VBIOS_VERSION`, `DCGM_FI_NVML_VERSION` | `gpu_temp`, `power_usage`, `fb_total`, `fb_used`, `fb_free`, `sm_clock`, `mem_clock`, `clocks_event_reasons`, `pcie_replay_counter`, `ecc_sbe_vol_total`, `ecc_dbe_vol_total`, `ecc_sbe_agg_total`, `ecc_dbe_agg_total` (f), `pstate` (i). MIG 가 아닐 때만: `gpu_util`, `mem_copy_util`, `enc_util`, `dec_util` (f). HBM 보드(A100, H100, H200): `memory_temp` (f). Turing, Volta, Pascal: `retired_pages_dbe`, `retired_pages_pending` (f), 그 밖의 아키텍처: `correctable_remapped_rows`, `uncorrectable_remapped_rows`, `row_remap_failure`, `row_remap_pending` (f) |
+| `dcgm` GPM, 장치 | hypervisor, MIG GPU 마다 하나 | 매번 | 물리 GPU 행과 같음 | `gpu_util`, `sm_occupancy`, `graphics_util`, `dram_bw_util`, `fp32_util`, `fp16_util`, `fp64_util` (f), `server_time` (i) |
+| `dcgm` GPM, MIG instance | hypervisor, MIG GPU 의 할당된 instance 마다 하나 | 매번 | 아래 vGPU/MIG VM 행과 같음 (`type=vm`) | GPM 장치 행과 같음 |
+| `dcgm` vGPU/MIG VM | hypervisor, vGPU·MIG GPU 의 VM 마다 하나 (hypervisor 의 매핑 스크립트가 씀) | 60초 | 전역 태그 대신 자체 묶음: `uuid=<credential_id>:<server id>`, `type=vm`, `host=<VM 이름>`, `gpu_type` (`VGPU` 또는 `MIG`), `credential_id`, `cloud_service`, `collection_type`, `time_diff=0`, `UUID` (vGPU uuid), `gpu` (GPU 안에서 vGPU 의 순번), `modelName` (vGPU 타입 이름), `gpu_instance_id` (vGPU GPU 는 `N/A`), `physical_gpu_uuid`, `pci_bus_id`, `DCGM_FI_DEV_PCI_BUSID`, `DCGM_FI_DRIVER_VERSION`, `DCGM_FI_DEV_VBIOS_VERSION`. `project_id` 없음 | `fb_total`, `fb_used`, `fb_free`, `vgpu_license_status`, `mig_mode` (f), `pstate`, `server_time` (i). vGPU GPU 만: `gpu_util`, `mem_copy_util`, `enc_util`, `dec_util` (f) |
 | `dcgm` passthrough 게스트 | passthrough VM | 매번 | 게스트에서 본 물리 GPU 태그 (`index=0`, 게스트 PCI 주소, 게스트 드라이버) 와 `DCGM_FI_CUDA_DRIVER_VERSION` | 물리 GPU 행과 같음, 사용률 필드 포함 |
 | `dcgm` cuda_probe | VGPU·MIG VM | 5분 | `UUID` (`GPU-` 를 뗀 vGPU uuid), `DCGM_FI_CUDA_DRIVER_VERSION` | `cuda_probe` (i, 항상 1), `server_time` (i) |
 | `dcgm` XID | passthrough VM (`uuid` 는 VM 것), 또는 VGPU/MIG VM 의 hypervisor (`uuid` 는 hypervisor 것) | GPU VM 마다 수집 1회당 확률 `xid_rate` | 전역 태그 없음. `err_code`, `DCGM_FI_DEV_PCI_BUSID` (`0000:bb:dd`), `uuid`, `UUID`, `modelName`, `DCGM_FI_DRIVER_VERSION` 만 | `xid_errors` (f, XID 코드), `err_msg` (s, 커널의 `NVRM: Xid` 줄) |
-| `gpu_vm_mapping` vGPU/MIG 할당 | VGPU·MIG hypervisor, VM 마다 하나 | 60초 | `openstack_vm_name`, `openstack_vm_uuid`, `host_bdf`, `guest_bdf=vgpu`, `vendor_id=10de`, `device_id`, `status=assigned`, `driver=nvidia`, `gpu_type` (`vgpu` 또는 `mig`, 전역 값을 덮음), `vgpu_uuid` | `mapped` (i, 1), `vgpu_fb_mb`, `vgpu_max_instances`, `vgpu_active_instances`, `server_time` (i), `vgpu_profile`, `vgpu_model_name`, `gpu_uuid` (s) |
-| `gpu_vm_mapping` passthrough 할당 | passthrough hypervisor, 할당된 GPU 마다 하나 | 60초 | 위와 같되 `vgpu_uuid` 없음. `guest_bdf` 는 게스트 PCI 주소, `driver=vfio-pci`, `gpu_type=passthrough` | `mapped` (i, 1), `server_time` (i) |
-| `gpu_vm_mapping` 미할당 | 모든 hypervisor, VM 이 없는 GPU 마다 하나 | 60초 | `openstack_vm_name=N/A`, `openstack_vm_uuid=N/A`, `guest_bdf=N/A`, `host_bdf`, `vendor_id`, `device_id`, `status=unassigned`, `driver` (`nvidia` 또는 `vfio-pci`), `gpu_type` (소문자 방식 이름) | `mapped` (i, 0), `vgpu_active_instances` (i, 0), `server_time` (i), `gpu_uuid` (s, passthrough 는 없음) |
+| `gpu_vm_mapping` vGPU/MIG 할당 | hypervisor, vGPU·MIG GPU 의 VM 마다 하나 | 60초 | `openstack_vm_name`, `openstack_vm_uuid`, `host_bdf`, `guest_bdf=vgpu`, `vendor_id=10de`, `device_id`, `status=assigned`, `driver=nvidia`, `gpu_type` (`vgpu` 또는 `mig`, 그 GPU 의 유형. 전역 값을 덮음), `vgpu_uuid` | `mapped` (i, 1), `vgpu_fb_mb`, `vgpu_max_instances`, `vgpu_active_instances`, `server_time` (i), `vgpu_profile`, `vgpu_model_name`, `gpu_uuid` (s) |
+| `gpu_vm_mapping` passthrough 할당 | hypervisor, 할당된 passthrough GPU 마다 하나 | 60초 | 위와 같되 `vgpu_uuid` 없음. `guest_bdf` 는 게스트 PCI 주소, `driver=vfio-pci`, `gpu_type=passthrough` | `mapped` (i, 1), `server_time` (i) |
+| `gpu_vm_mapping` 미할당 | 모든 hypervisor, VM 이 없는 GPU 마다 하나 | 60초 | `openstack_vm_name=N/A`, `openstack_vm_uuid=N/A`, `guest_bdf=N/A`, `host_bdf`, `vendor_id`, `device_id`, `status=unassigned`, `driver` (`nvidia` 또는 `vfio-pci`), `gpu_type` (그 GPU 유형의 소문자 이름) | `mapped` (i, 0), `vgpu_active_instances` (i, 0), `server_time` (i), `gpu_uuid` (s, passthrough GPU 는 없음) |
 | `cpu` | 모든 에이전트, cpu 마다 하나와 `cpu-total` | 매번 | `cpu` (`cpu0`, `cpu1`, ..., `cpu-total`) | `usage_user`, `usage_system`, `usage_idle`, `usage_nice`, `usage_iowait`, `usage_irq`, `usage_softirq`, `usage_steal` (f), `server_time` (i) |
 | `mem` | 모든 에이전트 | 매번 | - | `total`, `used`, `free`, `cached`, `buffered`, `available`, `active`, `inactive`, `shared` (i), `used_percent`, `available_percent` (f), `server_time` (i) |
 | `swap` | 모든 에이전트 (VM 은 `total` 이 0) | 매번 | - | `total`, `used`, `free` (i), `used_percent` (f), `server_time` (i) |
@@ -161,7 +163,7 @@ hostmetrics receiver 와 NVIDIA GPU receiver(nvidia-smi, 커널 로그, NVML GPM
 | `nvidia_smi.pstate` | gauge | `index`, `uuid`, `name` | 에이전트가 보는 모든 GPU | `nvidia_smi_pstate` |
 | `nvidia_smi.temperature.gpu`, `nvidia_smi.power.draw` | gauge, `Cel` 과 `W` | `index`, `uuid`, `name` | 보드 주인: hypervisor 와 passthrough 게스트 | `nvidia_smi_temperature_gpu_celsius`, `nvidia_smi_power_draw_watts` |
 | `nvidia_smi.temperature.memory` | gauge, `Cel` | `index`, `uuid`, `name` | 보드 주인, HBM 보드(A100, H100, H200) | `nvidia_smi_temperature_memory_celsius` |
-| `nvidia_smi.fan.speed` | gauge, `%` | `index`, `uuid`, `name` | 보드 주인, 팬이 달린 보드(RTX, Quadro, GeForce). 기본 토폴로지에는 없음 | `nvidia_smi_fan_speed_percent` |
+| `nvidia_smi.fan.speed` | gauge, `%` | `index`, `uuid`, `name` | 보드 주인, 팬이 달린 보드(RTX, Quadro, GeForce. Server Edition 보드는 제외). 기본 토폴로지에는 없음 | `nvidia_smi_fan_speed_percent` |
 | `nvidia_smi.clocks_event_reasons.active`, `nvidia_smi.ecc.errors.corrected.volatile.total` 과 나머지 `ecc.errors.*` 세 개 | gauge | `index`, `uuid`, `name` | 보드 주인 | `nvidia_smi_ecc_errors_corrected_volatile_total` |
 | `nvidia_smi.retired_pages.double_bit.count`, `.pending` | gauge | `index`, `uuid`, `name` | 보드 주인, Turing·Volta·Pascal | `nvidia_smi_retired_pages_pending` |
 | `nvidia_smi.remapped_rows.correctable`, `.uncorrectable`, `.pending`, `.failure` | gauge | `index`, `uuid`, `name` | 보드 주인, 그 밖의 아키텍처 | `nvidia_smi_remapped_rows_pending` |
@@ -170,9 +172,9 @@ hostmetrics receiver 와 NVIDIA GPU receiver(nvidia-smi, 커널 로그, NVML GPM
 
 에이전트가 nvidia-smi 로 보는 GPU 는 이렇습니다.
 
-- VGPU·MIG hypervisor: 모든 물리 GPU. `GPU-...` uuid 와 모델 이름으로 보입니다.
-- passthrough hypervisor: 없음. 호스트에 NVIDIA 드라이버가 없기 때문입니다(`driver_version` 이 비어 있음).
-  드라이버 버전을 적으면 VM 이 쓰지 않는 GPU 가 보입니다.
+- hypervisor: 모든 vGPU·MIG GPU. `GPU-...` uuid 와 모델 이름으로 보입니다. passthrough GPU 는 VM 이 있든 없든
+  vfio-pci 에 묶여 있어 호스트에서 보이지 않습니다.
+- GPU 가 모두 passthrough 인 hypervisor 는 아무것도 보지 못합니다. 호스트에 NVIDIA 드라이버가 없기 때문입니다(`driver_version` 이 비어 있음).
 - vGPU VM: `index=0` 인 GPU 하나. uuid 는 `GPU-<vgpu_uuid>`, `name` 은 vGPU 타입, 메모리는 vGPU 프레임버퍼입니다.
   게스트는 보드를 갖지 않으므로 온도, 전력, ECC, row remapping 이 없습니다.
 - MIG VM: vGPU VM 과 같되 `utilization.*` 이 없습니다.
@@ -308,7 +310,7 @@ curl -s -X PUT http://localhost:15080/api/v1/settings \
 | `GET /api/v1/tag-keys` | 저장된 토폴로지가 규칙 없이 보내는 tag 키(`influxdb`)와 라벨 키(`otlp`), 키마다 예시 값 하나. [tag 와 라벨 규칙](#tag-와-라벨-규칙) 참고 |
 | `GET`, `PUT /api/v1/topology`, `POST /api/v1/topology/reset` | 저장된 토폴로지. `PUT` 은 빈 칸을 채우지 않고 보낸 그대로 저장합니다 |
 | `POST /api/v1/topology/fill` | 본문의 토폴로지에서 빈 칸을 채우고 문제를 나열합니다. 저장하지 않습니다 |
-| `GET /api/v1/topology/catalog` | 편집기가 내놓는 GPU 모델, 프로필, flavor |
+| `GET /api/v1/topology/catalog` | 편집기가 내놓는 GPU 모델, 프로필, flavor. 모델마다 쓸 수 있는 유형(`modes`)과 MIG slice 수(`max_mig_slices`)도 있습니다 |
 
 저장이 거부되면 400 과 함께 문제를 모두 돌려줍니다. 예:
 `{"error":"validation failed","problems":["sink \"y\": db is empty"]}`. 알 수 없는 키는 오타로 보고 거부합니다.
@@ -489,6 +491,7 @@ sink 마다 규칙(`tag_rules`)으로 그 sink 가 쓰는 tag(`influxdb` sink)�
   칩에 마우스를 올리면 예시 값과 그 키가 실리는 곳이 보이고, 누르면 그 키의 이름을 바꾸거나 뺄 줄이 생깁니다. 칩은 규칙의 결과를
   그대로 보여 줍니다. 이름을 바꾼 키는 `host → hostname`, 뺀 키는 취소선, `add` 로 값을 덮어쓴 키는 `key = value`,
   `add` 로만 생기는 키는 `+ key = value` 로 그립니다.
+  줄의 키 칸도 같은 키를 목록으로 보여 줍니다. 목록에서 고르거나 아무 키나 직접 입력합니다.
 
 화면은 바꾸기 줄을 적힌 순서대로 먼저, 고정 tag 를 그 뒤에 저장합니다. 그래서 고정으로 넣은 key=value 는 항상 결과에 남습니다.
 API 로 `add` 를 목록 가운데에 넣어 저장한 sink 도 화면에서는 같은 방식으로 보이고, 화면에서 다시 저장하면 이 순서로 저장됩니다.
@@ -552,26 +555,45 @@ system.uptime  node_id=1a011d3e-2c7f-52df-b57c-ef644f3bc056
 
 - 팔레트에서 노드(vGPU, MIG, Passthrough)는 캔버스에, GPU 모델은 노드에, VM 은 GPU 에 끌어다 놓습니다.
   MIG GPU 에서는 VM 을 GPU 인스턴스 칸에 놓거나, 빈 칸에 놓아 그 VM 이 쓸 인스턴스를 만듭니다.
+- 끌어다 놓은 노드의 종류가 그 노드의 기본 유형, 즉 새로 넣는 GPU 가 받는 유형입니다. 목록의 GPU 모델은 어느 노드에든
+  들어갑니다. 새 GPU 는 모델이 노드의 기본 유형을 지원하면 그 유형을, 아니면 모델이 지원하는 첫 유형을 받습니다(아래 표 참고).
+  GPU 유형이 섞인 노드는 헤더에 유형 태그가 유형마다 하나씩 붙습니다.
 - VM 을 다른 GPU 로 끌면 옮겨집니다. 노드, GPU, VM 을 팔레트의 삭제 칸에 놓으면 지워집니다.
+- 노드, GPU, VM 을 우클릭하거나, 포커스가 있을 때 Shift+F10 이나 메뉴 키를 누르면 메뉴가 열립니다. 노드 메뉴에서는 아무
+  모델의 GPU 를 넣거나 노드를 지우고, GPU 메뉴에서는 VM 을 넣거나 GPU 유형을 바꾸거나 GPU 를 지우고, VM 메뉴에서는 VM 을
+  지웁니다. **Delete** 키는 선택한 노드, GPU, VM 을 지웁니다.
 - 규칙을 어기는 자리에는 놓이지 않고 이유가 그 자리에 나옵니다: passthrough GPU 에는 VM 하나, vGPU GPU 에는 프로필의
-  최대 수까지, MIG GPU 는 slice 7개까지, GPU 모델은 지원하는 모드의 노드에만 들어갑니다.
-- 노드, GPU, VM 을 누르면 **속성** 에서 고칩니다: 이름, 크기, IP, flavor, vGPU 프로필, MIG 인스턴스, `entity_id`.
-  노드의 모드는 만들 때 정해집니다.
+  최대 수까지, MIG GPU 의 인스턴스는 모델의 slice 수 안에서만(A100·H100 은 7, RTX PRO 6000 Blackwell 은 4) 들어갑니다.
+- 노드, GPU, VM 을 누르면 **속성** 에서 고칩니다: 이름, 크기, IP, flavor, 노드의 **기본 유형**, GPU 의 **유형**,
+  vGPU 프로필, MIG 인스턴스와 인스턴스마다의 vGPU 종류, `entity_id`.
+- GPU 유형을 바꾸면 VM 은 남기고 새 유형에 맞게 고칩니다. MIG 로 바꾼 GPU 는 VM 마다 가장 작은 프로필의 인스턴스를
+  하나씩 만듭니다. 자리가 모자라 넘치는 VM(passthrough GPU 의 두 번째 VM, 프로필 최대 수를 넘는 VM, MIG slice 가
+  남지 않아 인스턴스를 못 만든 VM)은 지우고 그 이름을 알려 줍니다.
 - 비워 둔 id, uuid, 주소, bus id, 드라이버 버전, flavor 는 기본 토폴로지와 같은 결정적 규칙으로 채웁니다
   (hypervisor IP 는 `192.0.2.0/24`, VM IP 는 `198.51.100.0/24` 와 `203.0.113.0/24` 에서). 직접 넣은 값은 그대로 둡니다.
 - 문제는 해당 노드, GPU, VM 옆에 나옵니다. 문제가 있으면 **저장** 이 거부됩니다.
   **되돌리기** 는 저장된 토폴로지를 다시 불러오고, **기본값으로** 는 저장된 토폴로지를 기본 6노드로 바꿔 바로 저장합니다.
 
-편집기가 내놓는 GPU 모델과 들어갈 수 있는 모드입니다.
+편집기가 내놓는 GPU 모델과 쓸 수 있는 유형입니다.
 
-| GPU 모델 | 모드 | vGPU 프로필 | MIG 프로필 |
-|----------|------|-------------|------------|
-| NVIDIA A10 | VGPU, PASSTHROUGH | NVIDIA A10-4Q | - |
-| Tesla T4 | VGPU, PASSTHROUGH | GRID T4-4Q | - |
-| NVIDIA A100-SXM4-80GB | MIG, PASSTHROUGH | - | 1g.10gb, 2g.20gb, 3g.40gb, 7g.80gb |
-| NVIDIA H100 80GB HBM3 | MIG, PASSTHROUGH | - | 1g.10gb, 3g.40gb |
-| NVIDIA L40S | PASSTHROUGH | - | - |
-| NVIDIA A100-PCIE-40GB | PASSTHROUGH | - | - |
+| GPU 모델 | 유형 | vGPU 프로필 | MIG 프로필 | MIG slice |
+|----------|------|-------------|------------|-----------|
+| NVIDIA A10 | VGPU, PASSTHROUGH | NVIDIA A10-4Q | - | - |
+| Tesla T4 | VGPU, PASSTHROUGH | GRID T4-4Q | - | - |
+| NVIDIA A100-SXM4-80GB | MIG, PASSTHROUGH | - | 1g.10gb, 2g.20gb, 3g.40gb, 7g.80gb | 7 |
+| NVIDIA H100 80GB HBM3 | MIG, PASSTHROUGH | - | 1g.10gb, 3g.40gb | 7 |
+| NVIDIA L40S | PASSTHROUGH | - | - | - |
+| NVIDIA A100-PCIE-40GB | PASSTHROUGH | - | - | - |
+| NVIDIA RTX PRO 6000 Blackwell Server Edition | VGPU, MIG, PASSTHROUGH | DC-8Q ~ DC-96Q 와 DC-8C ~ DC-96C (각각 8, 12, 16, 24, 32, 48, 96 GB), 첫 항목은 DC-24Q | 1g.24gb, 2g.48gb, 4g.96gb | 4 |
+
+새 GPU 는 그 모델의 첫 vGPU 프로필을 받습니다. MIG 프로필마다 인스턴스가 쓸 수 있는 vGPU 종류가 있고 첫 항목이 기본입니다.
+A100·H100 은 인스턴스마다 하나, RTX PRO 6000 Blackwell 은 Q(그래픽)와 C(연산) 두 가지입니다
+(1g.24gb 는 `DC-1-24Q`·`DC-1-24C`, 2g.48gb 는 `DC-2-48Q`·`C`, 4g.96gb 는 `DC-4-96Q`·`C`).
+
+RTX PRO 6000 Blackwell 은 이 목록에만 있고 기본 토폴로지에는 들어 있지 않습니다. 이름, PCI device id(2bb5), 메모리,
+VBIOS, 아키텍처, 2g.48gb 의 메모리와 GI ID(1, 2), vGPU 이름의 형식은 실제 장비에서 받아 둔 nvidia-smi 출력에서 가져왔습니다.
+vGPU 크기와 최대 수는 이 보드에 대한 NVIDIA 의 vGPU 타입 표를 따릅니다. 1g.24gb 와 4g.96gb 의 메모리, 1g.24gb 의
+GI ID(3~6)는 추정값이고, mdev 타입 번호(`nvidia-NNN`)는 다른 모델과 마찬가지로 지어낸 값입니다.
 
 ### JSON 보기
 
@@ -602,7 +624,7 @@ docker run --rm give-me-real-gpu:dev -dump-topology > topology.json
 ```
 
 VM 마다 `"mig_gpu_instance_id": -1` 을 적습니다. 0 도 올바른 MIG GPU 인스턴스 id 이므로 키를 빼면 빈 값으로 보지 않습니다.
-MIG 노드에서 -1 이면 비어 있는 첫 인스턴스를 고릅니다. GPU `index` 도 0 이 올바른 값이라 채우지 않습니다.
+MIG GPU 에서 -1 이면 비어 있는 첫 인스턴스를 고릅니다. GPU `index` 도 0 이 올바른 값이라 채우지 않습니다.
 
 ### 가장 작은 토폴로지
 
@@ -690,7 +712,36 @@ MIG GPU 는 `profile` 대신 `mig_instances` 를 두고, 그 GPU 의 VM 은 자�
 ```
 
 passthrough GPU 는 둘 다 없습니다. 그 VM 에는 `vgpu_uuid` 가 없고 `mig_gpu_instance_id` 는 `-1` 입니다.
-passthrough 노드는 호스트에 NVIDIA 드라이버가 없으므로 `driver_version` 과 `cuda_version` 을 비워 둡니다.
+GPU 가 모두 passthrough 인 노드는 호스트에 NVIDIA 드라이버가 없으므로 `driver_version` 과 `cuda_version` 을 비워 둡니다.
+
+한 노드에 GPU 유형을 섞을 수 있습니다. GPU 에 적은 `mode` 가 노드의 `mode` 보다 앞서고, 노드의 `mode` 는 `mode` 를
+비워 둔 GPU 의 유형(그리고 편집기가 새 GPU 에 주는 기본 유형)이 됩니다. 아래 노드에는 vGPU, MIG, passthrough GPU 가
+하나씩 있습니다. MIG GPU 는 인스턴스를 적어 줘야 하며, 여기서는 `profile` 만 적었습니다.
+
+```json
+{
+  "hypervisors": [
+    {
+      "hostname": "emu-mix-01",
+      "mode": "VGPU",
+      "gpus": [
+        {"index": 0, "model_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+         "vms": [{"name": "emu-mix01-g0-1", "mig_gpu_instance_id": -1}]},
+        {"index": 1, "model_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition", "mode": "MIG",
+         "mig_instances": [{"gpu_instance_id": -1, "profile": "2g.48gb"}],
+         "vms": [{"name": "emu-mix01-g1-1", "mig_gpu_instance_id": -1}]},
+        {"index": 2, "model_name": "NVIDIA L40S", "mode": "PASSTHROUGH",
+         "vms": [{"name": "emu-mix01-g2-1", "mig_gpu_instance_id": -1}]}
+      ]
+    }
+  ]
+}
+```
+
+적용하면 GPU 0 에는 프로필 `DC-24Q` 가, GPU 1 에는 `DC-2-48Q` 를 쓰는 인스턴스 1 이 생기고 그 VM 이 인스턴스 1 을 씁니다.
+VM 은 저마다 자기 GPU 의 유형을 받습니다. GPU 0 의 `mode` 는 적용 뒤에도 비어 있습니다. passthrough 가 아닌 GPU 가 있으므로
+노드에 호스트 드라이버가 채워집니다. 이 노드의 hypervisor 에이전트는 `gpu_type=MIG` 를 보내고, hypervisor 의 nvidia-smi 에는
+GPU 0 과 1 만 보이며, `gpu_vm_mapping` 행의 `gpu_type` 은 `vgpu`, `mig`, `passthrough` 입니다([InfluxDB 지표](#influxdb-지표) 참고).
 
 ### Entity ID
 
@@ -710,22 +761,23 @@ Entity ID 보기는 hypervisor 와 VM 마다 [OTLP 지표](#otlp-지표)에 붙�
 | `hypervisors[]` | `id`, `uuid` | nova hypervisor 정수 id 와 uuid |
 | `hypervisors[]` | `hostname` | nova 의 `hypervisor_hostname`, 호스트 지표의 `host` 태그 |
 | `hypervisors[]` | `host_ip` | nova `host_ip`, net 지표의 주소 |
-| `hypervisors[]` | `mode` | `VGPU`, `MIG`, `PASSTHROUGH` 중 하나. `gpu_type` 태그 값이기도 합니다 |
+| `hypervisors[]` | `mode` | `VGPU`, `MIG`, `PASSTHROUGH` 중 하나. `mode` 를 비워 둔 GPU 의 유형이자 편집기가 새 GPU 에 주는 기본 유형 |
 | `hypervisors[]` | `vcpus`, `memory_mb`, `local_gb` | nova 가 보고하는 물리 자원 |
-| `hypervisors[]` | `driver_version`, `cuda_version` | 호스트 NVIDIA 드라이버와 CUDA 드라이버 버전(`13020` 형식). passthrough 노드는 비움 |
+| `hypervisors[]` | `driver_version`, `cuda_version` | 호스트 NVIDIA 드라이버와 CUDA 드라이버 버전(`13020` 형식). GPU 가 모두 passthrough 면 비움 |
 | `gpus[]` | `index` | nvidia-smi 인덱스, 0 부터 |
 | `gpus[]` | `uuid` | `GPU-` 뒤에 UUID |
 | `gpus[]` | `bus_id`, `host_bdf` | PCI 주소의 두 형식: `00000000:18:00.0` 과 `18:00.0`(소문자) |
 | `gpus[]` | `model_name`, `device_id`, `memory_mib`, `vbios`, `arch` | 모델, PCI device id(vendor 는 항상 10de), 프레임버퍼, VBIOS, 아키텍처 |
-| `gpus[]` | `profile` | VGPU 노드만: 이 GPU 에 만든 vGPU 타입(`name`, mdev `type`, `framebuffer_mb`, `max_instances`) |
-| `gpus[]` | `mig_instances` | MIG 노드만: GPU 인스턴스(`gpu_instance_id`, `profile`, `slices`, `memory_mib`, `vgpu_profile`) |
+| `gpus[]` | `mode` | 선택. `VGPU`, `MIG`, `PASSTHROUGH` 중 하나. 비우면 노드의 `mode` 를 씁니다 |
+| `gpus[]` | `profile` | vGPU GPU 만: 이 GPU 에 만든 vGPU 타입(`name`, mdev `type`, `framebuffer_mb`, `max_instances`) |
+| `gpus[]` | `mig_instances` | MIG GPU 만: GPU 인스턴스(`gpu_instance_id`, `profile`, `slices`, `memory_mib`, `vgpu_profile`) |
 | `gpus[]` | `vms` | 이 GPU 를 쓰는 VM. `[]` 이면 미할당 GPU |
 | `vms[]` | `id`, `name`, `instance_name` | nova server id, server 이름(VM 지표의 `host` 태그이기도 함), libvirt 이름 |
-| `vms[]` | `hypervisor`, `gpu_index`, `mode` | VM 이 도는 곳. 이 VM 이 들어 있는 노드·GPU 와 같아야 합니다 |
+| `vms[]` | `hypervisor`, `gpu_index`, `mode` | VM 이 도는 곳과 유형. 이 VM 이 들어 있는 노드, GPU, 그 GPU 의 유형과 같아야 합니다 |
 | `vms[]` | `flavor_id` | `flavors` 안 항목의 id |
 | `vms[]` | `ip` | fixed ip |
 | `vms[]` | `vgpu_uuid` | vGPU 의 mdev uuid(VGPU 와 MIG). passthrough 는 비움 |
-| `vms[]` | `mig_gpu_instance_id` | 쓰는 MIG 인스턴스의 `gpu_instance_id`. 다른 노드는 `-1` |
+| `vms[]` | `mig_gpu_instance_id` | 쓰는 MIG 인스턴스의 `gpu_instance_id`. 다른 GPU 는 `-1` |
 | `vms[]` | `guest_bdf`, `guest_driver_version` | VM 안에서 보이는 PCI 주소와 NVIDIA 드라이버 |
 | `vms[]` | `vcpus`, `memory_mb`, `disk_gb` | VM 크기 |
 | `flavors[]` | `id`, `name`, `vcpus`, `ram_mb`, `disk_gb`, `extra_specs` | nova flavor. GPU flavor 는 `extra_specs` 에 `resources:VGPU` 나 `pci_passthrough:alias` 가 있습니다 |
@@ -738,14 +790,16 @@ Entity ID 보기는 hypervisor 와 VM 마다 [OTLP 지표](#otlp-지표)에 붙�
 - `project_id` 와 `user_name` 이 있어야 합니다. 알 수 없는 키는 오타로 보고 거부합니다.
 - 다음은 겹치면 안 됩니다: hypervisor `hostname`, `id`, `uuid` / GPU `uuid` / 한 노드 안의 GPU `index` 와 `bus_id` /
   VM `name`, `id`, `instance_name`, `vgpu_uuid` / flavor `id` 와 `name`.
-- `mode` 는 `VGPU`, `MIG`, `PASSTHROUGH` 중 하나이고, VM 의 `mode` 는 노드의 `mode` 와 같아야 합니다.
+- 노드의 `mode` 는 `VGPU`, `MIG`, `PASSTHROUGH` 중 하나, GPU 의 `mode` 는 비어 있거나 그중 하나여야 하고, VM 의 `mode` 는
+  그 GPU 의 유형(GPU 의 `mode`, 비어 있으면 노드의 `mode`)과 같아야 합니다.
 - VM 의 `hypervisor` 는 그 VM 이 들어 있는 노드의 `hostname`, `gpu_index` 는 그 GPU 의 `index` 여야 하고,
   `flavor_id` 는 `flavors` 에 있어야 합니다.
-- VGPU: 모든 GPU 에 `profile` 이 있고, GPU 하나의 VM 수는 `profile.max_instances` 이하이며, 모든 VM 에 `vgpu_uuid` 가 있습니다.
-- MIG: 한 GPU 의 인스턴스 `slices` 합이 7 이하이고, `gpu_instance_id` 는 GPU 안에서 겹치지 않으며, VM 의
-  `mig_gpu_instance_id` 는 그 GPU 의 인스턴스를 가리키고, 인스턴스 하나에 VM 은 하나까지이며, 모든 VM 에 `vgpu_uuid` 가 있습니다.
-- PASSTHROUGH: GPU 하나에 VM 은 하나까지이고, VM 에 `vgpu_uuid` 가 없습니다.
-- VGPU 와 PASSTHROUGH 노드에서 `mig_gpu_instance_id` 는 `-1` 입니다.
+- VGPU GPU: 모두 `profile` 이 있고, VM 수는 `profile.max_instances` 이하이며, 모든 VM 에 `vgpu_uuid` 가 있습니다.
+- MIG GPU: 인스턴스 `slices` 합이 모델의 slice 수(A100·H100 은 7, RTX PRO 6000 Blackwell 은 4, 카탈로그에 없는 모델은 7)
+  이하이고, `gpu_instance_id` 는 GPU 안에서 겹치지 않으며, VM 의 `mig_gpu_instance_id` 는 그 GPU 의 인스턴스를 가리키고,
+  인스턴스 하나에 VM 은 하나까지이며, 모든 VM 에 `vgpu_uuid` 가 있습니다.
+- PASSTHROUGH GPU: VM 은 하나까지이고, VM 에 `vgpu_uuid` 가 없습니다.
+- VGPU 와 PASSTHROUGH GPU 에서 `mig_gpu_instance_id` 는 `-1` 입니다.
 
 형식은 검사하지 않습니다. 관리 플랫폼과 모니터링 서버가 이 값들을 저장하므로 덤프와 같은 형식을 지킵니다
 (UUID, `project_id` 와 `user_id` 는 16진수 32자).
