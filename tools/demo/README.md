@@ -23,6 +23,8 @@ above open dialogs, and it is in the page language.
 | `topology` | a VM from the palette goes onto a GPU with room, the same VM dragged onto a full GPU is refused | Topology: drag a VM onto a GPU. A GPU with no room refuses it | 토폴로지: VM 을 GPU 에 끌어다 놓습니다. 자리가 없는 GPU 는 거부합니다 |
 | | GPU 2 of the first node (three VMs) is right-clicked and set to Passthrough in its menu; the node head gets a second type tag and a toast names the two VMs that did not fit | Right-click a GPU to add a VM or change its type. VMs that do not fit are deleted | GPU 를 우클릭해 VM 을 추가하거나 유형을 바꿉니다. 자리가 모자라면 넘치는 VM 은 지웁니다 |
 | | a VM is right-clicked and Delete VM in its menu removes it | Right-click a VM to delete it. The Delete key removes the selected one too | VM 을 우클릭해 지웁니다. 선택한 것은 Delete 키로도 지웁니다 |
+| | `emu-mig-01` is right-clicked and an RTX PRO 6000 Blackwell is added from its menu, with a MIG bar of four slices; in its properties a `2g.48gb` instance is added and its vGPU type set to `DC-2-12C` | Blackwell GPUs split into 4 MIG slices, and one GPU instance can be time-shared by several vGPUs | Blackwell GPU 는 MIG 4조각입니다. GI 하나를 vGPU 여러 대가 시간으로 나눠 쓸 수 있습니다 |
+| | three VMs from the palette go onto that instance and its slot counts `3/4` | DC-2-12C puts 4 VMs on one 2g.48gb instance; the slot shows n/4 | DC-2-12C 는 2g.48gb 하나에 VM 4대. 칸에 n/4 로 보입니다 |
 | | Save shows the saved toast | Save: the fake OpenStack API serves the new topology right away | 저장: 가짜 OpenStack API 가 새 토폴로지를 바로 내보냅니다 |
 
 The captions are in `CAPTIONS` at the top of `record.mjs`.

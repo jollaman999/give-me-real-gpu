@@ -42,6 +42,8 @@ const CAPTIONS = {
     topo_drag: "Topology: drag a VM onto a GPU. A GPU with no room refuses it",
     topo_type: "Right-click a GPU to add a VM or change its type. VMs that do not fit are deleted",
     topo_delete: "Right-click a VM to delete it. The Delete key removes the selected one too",
+    topo_mig: "Blackwell GPUs split into 4 MIG slices, and one GPU instance can be time-shared by several vGPUs",
+    topo_share: "DC-2-12C puts 4 VMs on one 2g.48gb instance; the slot shows n/4",
     topo_save: "Save: the fake OpenStack API serves the new topology right away"
   },
   ko: {
@@ -53,6 +55,8 @@ const CAPTIONS = {
     topo_drag: "토폴로지: VM 을 GPU 에 끌어다 놓습니다. 자리가 없는 GPU 는 거부합니다",
     topo_type: "GPU 를 우클릭해 VM 을 추가하거나 유형을 바꿉니다. 자리가 모자라면 넘치는 VM 은 지웁니다",
     topo_delete: "VM 을 우클릭해 지웁니다. 선택한 것은 Delete 키로도 지웁니다",
+    topo_mig: "Blackwell GPU 는 MIG 4조각입니다. GI 하나를 vGPU 여러 대가 시간으로 나눠 쓸 수 있습니다",
+    topo_share: "DC-2-12C 는 2g.48gb 하나에 VM 4대. 칸에 n/4 로 보입니다",
     topo_save: "저장: 가짜 OpenStack API 가 새 토폴로지를 바로 내보냅니다"
   }
 };
@@ -630,7 +634,9 @@ async function sceneSinks() {
 
 // Topology: a new VM from the palette goes onto a GPU with room, the same VM dragged onto a full GPU is refused, a GPU
 // with a few VMs is changed to passthrough from its context menu (the node then carries two type tags and a toast
-// names the VMs that did not fit), a VM is deleted from its context menu, then Save. The page scrolls back to the top
+// names the VMs that did not fit), a VM is deleted from its context menu, an RTX PRO 6000 Blackwell is added to
+// emu-mig-01 from the node menu and gets a 2g.48gb instance with the time-sliced DC-2-12C type, three VMs from the
+// palette share that instance, then Save. The page scrolls back to the top
 // before the refused drag so the full GPU and the new VM are both in view; the refusal note stays for a moment after
 // the release.
 async function dragItem(item, target, drop, innerFirst) {
@@ -647,6 +653,12 @@ async function dragItem(item, target, drop, innerFirst) {
   await evaluate(`window.__demo.dragEnd(${to.x}, ${to.y}, ${drop})`);
   await evaluate("window.__demo.press(false)");
   return ok;
+}
+
+// checked waits until the editor has checked the last change with the server and found no problem: the check draws
+// the canvas again, so an element picked before it ends is gone.
+async function checked(what) {
+  await waitFor(what, '/^(No problems|문제 없음)/.test(document.querySelector(".tp-status").textContent)', 5000);
 }
 
 async function sceneTopology() {
@@ -705,6 +717,56 @@ async function sceneTopology() {
   await press(del);
   await waitFor("the VM to go", `${count} === ${vms - 1}`, 3000);
   await hold(1000);
+
+  await caption("topo_mig");
+  const migHead = '[...document.querySelectorAll(".tp-node-head")].find((e) => e.querySelector(".tp-node-name").textContent === "emu-mig-01")';
+  await pick("mnode", `${migHead}.querySelector(".tp-node-name")`, "the head of emu-mig-01");
+  const mh = await evaluate(`${migHead}.dataset.h`);
+  const mg = await evaluate(`document.querySelectorAll('.tp-gpu-head[data-h="${mh}"]').length`);
+  await rightClick(await show("mnode"));
+  await waitFor("the node menu", 'document.querySelector(".tp-menu") !== null', 3000);
+  await hold(900);
+  await pick("bw", '[...document.querySelectorAll(".tp-menu .tp-menu-item:not(:disabled)")].find((b) => /Blackwell/.test(b.title))', "the Blackwell GPU in the node menu");
+  const bw = await at("bw");
+  await moveTo(bw, 420);
+  await hold(600);
+  await press(bw);
+  const newGPU = `document.querySelector('.tp-gpu[data-h="${mh}"][data-g="${mg}"]')`;
+  await checked("the check of the new GPU");
+  await waitFor("the four MIG slices of the new GPU", `((g) => !!g && !!g.querySelector(".tp-mig") && g.querySelector(".tp-mig").style.getPropertyValue("--tp-slices") === "4")(${newGPU})`, 3000);
+  await pick("ngpu", `${newGPU}.querySelector(".tp-mig")`, "the MIG bar of the new GPU");
+  await moveTo(await show("ngpu"), 420);
+  await hold(900);
+  await pick("miprof", 'document.querySelector(".tp-props .tp-mig-table + .tp-actions select")', "the MIG instance select");
+  await press(await show("miprof", true), false);
+  await evaluate('window.__demo.choose("miprof", "2g.48gb")');
+  await hold(500);
+  await pick("miadd", 'document.querySelector(".tp-props .tp-mig-table + .tp-actions button")', "the Add instance button");
+  await press(await show("miadd", true));
+  const slot = `document.querySelector('[data-drop=slot][data-h="${mh}"][data-g="${mg}"]')`;
+  await checked("the check of the new MIG instance");
+  await waitFor("the new MIG instance", `${slot} !== null`, 3000);
+  await hold(600);
+  await pick("mivgpu", 'document.querySelector(".tp-props .tp-mig-vgpu select")', "the vGPU type of the instance");
+  await press(await show("mivgpu", true), false);
+  if (!(await evaluate('window.__demo.choose("mivgpu", "NVIDIA RTX Pro 6000 Blackwell DC-2-12C")'))) throw new Error("the instance has no DC-2-12C type");
+  await checked("the check of the DC-2-12C type");
+  await waitFor("the four seats of the instance", `${slot}.querySelector(".tp-slot-count").textContent === "0/4"`, 3000);
+  await hold(1000);
+
+  await caption("topo_share");
+  for (let i = 1; i <= 3; i++) {
+    await pick("vm", 'document.querySelector("[data-drag=new-vm]")', "the VM in the palette");
+    await pick("slot", slot, "the 2g.48gb instance of the new GPU");
+    if (!(await dragItem("vm", "slot", true, true))) throw new Error(`the instance refused VM ${i}`);
+    await checked(`the check of VM ${i}`);
+    await waitFor(`VM ${i} on the instance`, `${slot}.querySelector(".tp-slot-count").textContent === "${i}/4"`, 3000);
+    await hold(400);
+  }
+  await pick("slot", `${slot}.querySelector(".tp-slot-count")`, "the seat count of the instance");
+  const seats = await show("slot");
+  await moveTo({ x: Math.round(seats.x - seats.w / 2 - 14), y: seats.y }, 420);
+  await hold(1400);
 
   await caption("topo_save");
   await pick("save", 'document.querySelector(".tp-toolbar .btn-primary")', "the topology Save button");
