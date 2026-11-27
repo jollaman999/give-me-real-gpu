@@ -573,7 +573,7 @@ system.uptime  node_id=1a011d3e-2c7f-52df-b57c-ef644f3bc056
 - vGPU GPU 는 머리에 vGPU 종류의 짧은 이름이 나옵니다(`NVIDIA RTX Pro 6000 Blackwell DC-24Q` 는 `DC-24Q`,
   `GRID T4-4Q` 는 `T4-4Q`). 마우스를 올리면 전체 이름이 나옵니다.
 - 규칙을 어기는 자리에는 놓이지 않고 이유가 그 자리에 나옵니다: passthrough GPU 에는 VM 하나, vGPU GPU 에는 프로필의
-  최대 수까지, GPU 인스턴스에는 그 vGPU 종류가 받는 수까지(보통 하나, 시간 나눔 종류는 2~4), MIG GPU 의 인스턴스는
+  최대 수까지, GPU 인스턴스에는 그 vGPU 종류가 받는 수까지(보통 하나, time-sliced MIG-backed vGPU 종류는 2~4), MIG GPU 의 인스턴스는
   모델의 slice 수 안에서(A100·H100·B200 은 7, RTX PRO 6000 Blackwell 은 4), 그리고 MIG 프로필마다 GPU 하나에 만들 수
   있는 수 안에서만(아래 표 참고) 들어갑니다. 인스턴스 추가 목록에서도 그 수에 닿은 프로필은 빠집니다.
 - 노드, GPU, VM 을 누르면 **속성** 에서 고칩니다: 이름, 크기, IP, flavor, 노드의 **기본 유형**, GPU 의 **유형**,
@@ -604,9 +604,9 @@ system.uptime  node_id=1a011d3e-2c7f-52df-b57c-ef644f3bc056
 새 GPU 는 그 모델의 첫 vGPU 프로필을 받습니다. MIG 프로필마다 인스턴스가 쓸 수 있는 vGPU 종류가 있고 첫 항목이 기본입니다.
 A100·H100 은 인스턴스마다 하나입니다. RTX PRO 6000 Blackwell 에는 인스턴스를 통째로 쓰는 Q(그래픽)와 C(연산) 종류가 있고
 (1g.24gb 는 `DC-1-24Q`·`DC-1-24C`, 2g.48gb 는 `DC-2-48Q`·`C`, 4g.96gb 는 `DC-4-96Q`·`C`), 그 뒤에 VM 여러 대가
-인스턴스 하나를 시간으로 나눠 쓰는 C 종류가 있습니다.
+인스턴스 하나를 time-sliced 로 나눠 쓰는 C 종류(time-sliced MIG-backed vGPU)가 있습니다.
 
-| MIG 프로필 | 시간 나눔 vGPU 종류 (인스턴스 하나에 붙는 VM 수) |
+| MIG 프로필 | time-sliced MIG-backed vGPU 종류 (인스턴스 하나에 붙는 VM 수) |
 |------------|---------------------------------------------------|
 | 1g.24gb | DC-1-12C (2), DC-1-8C (3) |
 | 2g.48gb | DC-2-24C (2), DC-2-16C (3), DC-2-12C (4) |
@@ -617,9 +617,9 @@ MIG 프로필 가운데에는 차지하는 slice 와 별도로 GPU 하나에 만
 
 | GPU 모델 | MIG 프로필 | vGPU 종류 | GPU 하나에 최대 |
 |----------|------------|-----------|-----------------|
-| RTX PRO 6000 Blackwell | 1g.24gb | DC-1-24Q, DC-1-24C 와 시간 나눔 종류 | 4 |
-| RTX PRO 6000 Blackwell | 2g.48gb | DC-2-48Q, DC-2-48C 와 시간 나눔 종류 | 2 |
-| RTX PRO 6000 Blackwell | 4g.96gb | DC-4-96Q, DC-4-96C 와 시간 나눔 종류 | 1 |
+| RTX PRO 6000 Blackwell | 1g.24gb | DC-1-24Q, DC-1-24C 와 time-sliced 종류 | 4 |
+| RTX PRO 6000 Blackwell | 2g.48gb | DC-2-48Q, DC-2-48C 와 time-sliced 종류 | 2 |
+| RTX PRO 6000 Blackwell | 4g.96gb | DC-4-96Q, DC-4-96C 와 time-sliced 종류 | 1 |
 | B200 | 1g.23gb | B200X-1-23C | 7 |
 | B200 | 1g.23gb+me | B200X-1-23CME | 1 |
 | B200 | 1g.45gb | B200X-1-45C | 4 |
@@ -632,7 +632,7 @@ A100·H100 에는 이런 수가 없고 slice 수만 봅니다.
 
 RTX PRO 6000 Blackwell 은 이 목록에만 있고 기본 토폴로지에는 들어 있지 않습니다. 이름, PCI device id(2bb5), 메모리,
 VBIOS, 아키텍처, 2g.48gb 의 메모리와 GI ID(1, 2), vGPU 이름의 형식은 실제 장비에서 받아 둔 nvidia-smi 출력에서 가져왔습니다.
-vGPU 크기와 최대 수는 이 보드에 대한 NVIDIA 의 vGPU 타입 표를, 시간 나눔 종류의 크기·최대 수·인스턴스당 VM 수는
+vGPU 크기와 최대 수는 이 보드에 대한 NVIDIA 의 vGPU 타입 표를, time-sliced MIG-backed vGPU 종류의 크기·최대 수·인스턴스당 VM 수는
 NVIDIA AI Enterprise 의 이 보드 MIG-backed vGPU 표를 따릅니다. 1g.24gb 와 4g.96gb 의 메모리, 1g.24gb 의
 GI ID(3~6)는 추정값이고, mdev 타입 번호(`nvidia-NNN`)는 다른 모델과 마찬가지로 지어낸 값입니다.
 
@@ -790,8 +790,8 @@ VM 은 저마다 자기 GPU 의 유형을 받습니다. GPU 0 의 `mode` 는 적
 노드에 호스트 드라이버가 채워집니다. 이 노드의 hypervisor 에이전트는 `gpu_type=MIG` 를 보내고, hypervisor 의 nvidia-smi 에는
 GPU 0 과 1 만 보이며, `gpu_vm_mapping` 행의 `gpu_type` 은 `vgpu`, `mig`, `passthrough` 입니다([InfluxDB 지표](#influxdb-지표) 참고).
 
-인스턴스의 vGPU 종류가 시간 나눔 종류면 VM 여러 대가 그 인스턴스를 나눠 씁니다. `vgpu_profile` 이 없는 인스턴스는
-인스턴스를 통째로 쓰는 기본 종류를 받으므로, 시간 나눔 종류는 `GET /api/v1/topology/catalog` 에 나오는 대로
+인스턴스의 vGPU 종류가 time-sliced MIG-backed vGPU 종류면 VM 여러 대가 그 인스턴스를 나눠 씁니다. `vgpu_profile` 이 없는 인스턴스는
+인스턴스를 통째로 쓰는 기본 종류를 받으므로, time-sliced 종류는 `GET /api/v1/topology/catalog` 에 나오는 대로
 `per_gpu_instance` 까지 모두 적습니다. 아래는 VM 4대를 받는 `DC-4-24C` 의 4g.96gb 인스턴스 하나를 VM 3대가 나눠 쓰는 예입니다.
 
 ```json
@@ -845,7 +845,7 @@ Entity ID 보기는 hypervisor 와 VM 마다 [OTLP 지표](#otlp-지표)에 붙�
 | `gpus[]` | `mode` | 선택. `VGPU`, `MIG`, `PASSTHROUGH` 중 하나. 비우면 노드의 `mode` 를 씁니다 |
 | `gpus[]` | `profile` | vGPU GPU 만: 이 GPU 에 만든 vGPU 타입(`name`, mdev `type`, `framebuffer_mb`, `max_instances`) |
 | `gpus[]` | `mig_instances` | MIG GPU 만: GPU 인스턴스(`gpu_instance_id`, `profile`, `slices`, `memory_mib`, `vgpu_profile`). `vgpu_profile` 은 인스턴스에 붙는 vGPU 종류이고 키는 `profile` 과 같음 |
-| `profile`, `vgpu_profile` | `per_gpu_instance` | 선택. 이 vGPU 종류를 쓰는 GPU 인스턴스 하나를 나눠 쓰는 VM 수(시간 나눔 MIG-backed 종류는 2~4). 비우거나 0 이면 1 |
+| `profile`, `vgpu_profile` | `per_gpu_instance` | 선택. 이 vGPU 종류를 쓰는 GPU 인스턴스 하나를 나눠 쓰는 VM 수(time-sliced MIG-backed vGPU 종류는 2~4). 비우거나 0 이면 1 |
 | `gpus[]` | `vms` | 이 GPU 를 쓰는 VM. `[]` 이면 미할당 GPU |
 | `vms[]` | `id`, `name`, `instance_name` | nova server id, server 이름(VM 지표의 `host` 태그이기도 함), libvirt 이름 |
 | `vms[]` | `hypervisor`, `gpu_index`, `mode` | VM 이 도는 곳과 유형. 이 VM 이 들어 있는 노드, GPU, 그 GPU 의 유형과 같아야 합니다 |

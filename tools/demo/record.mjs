@@ -55,7 +55,7 @@ const CAPTIONS = {
     topo_drag: "토폴로지: VM 을 GPU 에 끌어다 놓습니다. 자리가 없는 GPU 는 거부합니다",
     topo_type: "GPU 를 우클릭해 VM 을 추가하거나 유형을 바꿉니다. 자리가 모자라면 넘치는 VM 은 지웁니다",
     topo_delete: "VM 을 우클릭해 지웁니다. 선택한 것은 Delete 키로도 지웁니다",
-    topo_mig: "Blackwell GPU 는 MIG 4조각입니다. GI 하나를 vGPU 여러 대가 시간으로 나눠 쓸 수 있습니다",
+    topo_mig: "Blackwell GPU 는 MIG 4조각입니다. GI 하나를 time-sliced vGPU 여러 대가 나눠 쓸 수 있습니다",
     topo_share: "DC-2-12C 는 2g.48gb 하나에 VM 4대. 칸에 n/4 로 보입니다",
     topo_save: "저장: 가짜 OpenStack API 가 새 토폴로지를 바로 내보냅니다"
   }
