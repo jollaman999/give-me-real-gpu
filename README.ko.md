@@ -313,7 +313,7 @@ curl -s -X PUT http://localhost:15080/api/v1/settings \
 | `GET /api/v1/tag-keys` | 저장된 토폴로지가 규칙 없이 보내는 tag 키(`influxdb`)와 라벨 키(`otlp`), 키마다 예시 값 하나. [tag 와 라벨 규칙](#tag-와-라벨-규칙) 참고 |
 | `GET`, `PUT /api/v1/topology`, `POST /api/v1/topology/reset` | 저장된 토폴로지. `PUT` 은 빈 칸을 채우지 않고 보낸 그대로 저장합니다 |
 | `POST /api/v1/topology/fill` | 본문의 토폴로지에서 빈 칸을 채우고 문제를 나열합니다. 저장하지 않습니다 |
-| `GET /api/v1/topology/catalog` | 편집기가 내놓는 GPU 모델, 프로필, flavor. 모델마다 쓸 수 있는 유형(`modes`)과 MIG slice 수(`max_mig_slices`)도 있습니다 |
+| `GET /api/v1/topology/catalog` | 편집기가 내놓는 GPU 모델, 프로필, flavor. 모델마다 쓸 수 있는 유형(`modes`)과 MIG slice 수(`max_mig_slices`), 수가 정해진 MIG 프로필마다 GPU 하나에 만들 수 있는 수(`max_per_gpu`)도 있습니다 |
 
 저장이 거부되면 400 과 함께 문제를 모두 돌려줍니다. 예:
 `{"error":"validation failed","problems":["sink \"y\": db is empty"]}`. 알 수 없는 키는 오타로 보고 거부합니다.
@@ -563,15 +563,22 @@ system.uptime  node_id=1a011d3e-2c7f-52df-b57c-ef644f3bc056
   들어갑니다. 새 GPU 는 모델이 노드의 기본 유형을 지원하면 그 유형을, 아니면 모델이 지원하는 첫 유형을 받습니다(아래 표 참고).
   GPU 유형이 섞인 노드는 헤더에 유형 태그가 유형마다 하나씩 붙습니다.
 - VM 을 다른 GPU 로 끌면 옮겨집니다. 노드, GPU, VM 을 팔레트의 삭제 칸에 놓으면 지워집니다.
+- 노드 카드 맨 아래의 **+ GPU 추가** 를 누르면 그 노드에 넣을 GPU 모델 목록이 열립니다. 모델마다 그 모델이 쓸 수 있는
+  유형이 칩으로 붙어 있어, 칩을 누르면 그 유형으로, 모델 이름을 누르면 끌어다 놓았을 때 받는 유형으로 GPU 가 들어갑니다.
+- 노드 속성 칸에서도 GPU 를 넣을 수 있습니다. 모델을 고르면 그 모델이 쓸 수 있는 유형이 옆 칸에 나오고(기본 유형이 미리
+  골라져 있음), **GPU 추가** 를 누르면 그 유형으로 들어갑니다.
 - 노드, GPU, VM 을 우클릭하거나, 포커스가 있을 때 Shift+F10 이나 메뉴 키를 누르면 메뉴가 열립니다. 노드 메뉴에서는 아무
-  모델의 GPU 를 넣거나 노드를 지우고, GPU 메뉴에서는 VM 을 넣거나 GPU 유형을 바꾸거나 GPU 를 지우고, VM 메뉴에서는 VM 을
-  지웁니다. **Delete** 키는 선택한 노드, GPU, VM 을 지웁니다.
+  모델의 GPU 를 넣거나 노드를 지우고, GPU 메뉴에서는 VM 을 넣거나 같은 노드에 GPU 를 넣거나(**이 노드에 GPU 추가**)
+  GPU 유형을 바꾸거나 GPU 를 지우고, VM 메뉴에서는 VM 을 지웁니다. **Delete** 키는 선택한 노드, GPU, VM 을 지웁니다.
+- vGPU GPU 는 머리에 vGPU 종류의 짧은 이름이 나옵니다(`NVIDIA RTX Pro 6000 Blackwell DC-24Q` 는 `DC-24Q`,
+  `GRID T4-4Q` 는 `T4-4Q`). 마우스를 올리면 전체 이름이 나옵니다.
 - 규칙을 어기는 자리에는 놓이지 않고 이유가 그 자리에 나옵니다: passthrough GPU 에는 VM 하나, vGPU GPU 에는 프로필의
   최대 수까지, GPU 인스턴스에는 그 vGPU 종류가 받는 수까지(보통 하나, 시간 나눔 종류는 2~4), MIG GPU 의 인스턴스는
-  모델의 slice 수 안에서만(A100·H100 은 7, RTX PRO 6000 Blackwell 은 4) 들어갑니다.
+  모델의 slice 수 안에서(A100·H100·B200 은 7, RTX PRO 6000 Blackwell 은 4), 그리고 MIG 프로필마다 GPU 하나에 만들 수
+  있는 수 안에서만(아래 표 참고) 들어갑니다. 인스턴스 추가 목록에서도 그 수에 닿은 프로필은 빠집니다.
 - 노드, GPU, VM 을 누르면 **속성** 에서 고칩니다: 이름, 크기, IP, flavor, 노드의 **기본 유형**, GPU 의 **유형**,
-  vGPU 프로필, MIG 인스턴스와 인스턴스마다의 vGPU 종류(VM 을 여럿 받는 종류는 `DC-4-24C (VM 4대)` 처럼 그 수가 붙음),
-  `entity_id`.
+  vGPU 프로필, MIG 인스턴스와 인스턴스마다의 vGPU 종류(종류마다 메모리와 받는 VM 수가 `DC-4-24C · 24GB · VM 4대` 처럼
+  붙음), `entity_id`.
 - GPU 유형을 바꾸면 VM 은 남기고 새 유형에 맞게 고칩니다. MIG 로 바꾼 GPU 는 VM 마다 가장 작은 프로필의 인스턴스를
   하나씩 만듭니다. 자리가 모자라 넘치는 VM(passthrough GPU 의 두 번째 VM, 프로필 최대 수를 넘는 VM, MIG slice 가
   남지 않아 인스턴스를 못 만든 VM)은 지우고 그 이름을 알려 줍니다. 인스턴스의 vGPU 종류를 지금 VM 수보다 적게 받는
@@ -592,6 +599,7 @@ system.uptime  node_id=1a011d3e-2c7f-52df-b57c-ef644f3bc056
 | NVIDIA L40S | PASSTHROUGH | - | - | - |
 | NVIDIA A100-PCIE-40GB | PASSTHROUGH | - | - | - |
 | NVIDIA RTX PRO 6000 Blackwell Server Edition | VGPU, MIG, PASSTHROUGH | DC-8Q ~ DC-96Q 와 DC-8C ~ DC-96C (각각 8, 12, 16, 24, 32, 48, 96 GB), 첫 항목은 DC-24Q | 1g.24gb, 2g.48gb, 4g.96gb | 4 |
+| NVIDIA B200 | VGPU, MIG, PASSTHROUGH | B200X-180C | 1g.23gb, 1g.23gb+me, 1g.45gb, 2g.45gb, 3g.90gb, 4g.90gb, 7g.180gb | 7 |
 
 새 GPU 는 그 모델의 첫 vGPU 프로필을 받습니다. MIG 프로필마다 인스턴스가 쓸 수 있는 vGPU 종류가 있고 첫 항목이 기본입니다.
 A100·H100 은 인스턴스마다 하나입니다. RTX PRO 6000 Blackwell 에는 인스턴스를 통째로 쓰는 Q(그래픽)와 C(연산) 종류가 있고
@@ -604,11 +612,34 @@ A100·H100 은 인스턴스마다 하나입니다. RTX PRO 6000 Blackwell 에는
 | 2g.48gb | DC-2-24C (2), DC-2-16C (3), DC-2-12C (4) |
 | 4g.96gb | DC-4-48C (2), DC-4-32C (3), DC-4-24C (4) |
 
+MIG 프로필 가운데에는 차지하는 slice 와 별도로 GPU 하나에 만들 수 있는 수가 정해진 것이 있습니다(카탈로그의
+`max_per_gpu`). B200 의 MIG 프로필에는 인스턴스를 통째로 쓰는 C 종류가 하나씩 있습니다.
+
+| GPU 모델 | MIG 프로필 | vGPU 종류 | GPU 하나에 최대 |
+|----------|------------|-----------|-----------------|
+| RTX PRO 6000 Blackwell | 1g.24gb | DC-1-24Q, DC-1-24C 와 시간 나눔 종류 | 4 |
+| RTX PRO 6000 Blackwell | 2g.48gb | DC-2-48Q, DC-2-48C 와 시간 나눔 종류 | 2 |
+| RTX PRO 6000 Blackwell | 4g.96gb | DC-4-96Q, DC-4-96C 와 시간 나눔 종류 | 1 |
+| B200 | 1g.23gb | B200X-1-23C | 7 |
+| B200 | 1g.23gb+me | B200X-1-23CME | 1 |
+| B200 | 1g.45gb | B200X-1-45C | 4 |
+| B200 | 2g.45gb | B200X-2-45C | 3 |
+| B200 | 3g.90gb | B200X-3-90C | 2 |
+| B200 | 4g.90gb | B200X-4-90C | 1 |
+| B200 | 7g.180gb | B200X-7-180C | 1 |
+
+A100·H100 에는 이런 수가 없고 slice 수만 봅니다.
+
 RTX PRO 6000 Blackwell 은 이 목록에만 있고 기본 토폴로지에는 들어 있지 않습니다. 이름, PCI device id(2bb5), 메모리,
 VBIOS, 아키텍처, 2g.48gb 의 메모리와 GI ID(1, 2), vGPU 이름의 형식은 실제 장비에서 받아 둔 nvidia-smi 출력에서 가져왔습니다.
 vGPU 크기와 최대 수는 이 보드에 대한 NVIDIA 의 vGPU 타입 표를, 시간 나눔 종류의 크기·최대 수·인스턴스당 VM 수는
 NVIDIA AI Enterprise 의 이 보드 MIG-backed vGPU 표를 따릅니다. 1g.24gb 와 4g.96gb 의 메모리, 1g.24gb 의
 GI ID(3~6)는 추정값이고, mdev 타입 번호(`nvidia-NNN`)는 다른 모델과 마찬가지로 지어낸 값입니다.
+
+B200(HGX B200 180GB)도 이 목록에만 있고, 실제 장비에서 잰 값은 하나도 없습니다. vGPU 종류와 그 메모리·최대 수, MIG
+프로필과 GPU 하나에 만들 수 있는 수는 NVIDIA AI Enterprise 의 이 보드 Blackwell vGPU 표를 따릅니다. PCI device id(2901),
+메모리(184320 MiB), vGPU 이름의 형식, MIG 프로필마다의 메모리, GI ID 순서(A100 과 같은 배치), 지표의 전력 한도와
+클럭(공개된 보드 사양에서)은 추정값이고, VBIOS 와 mdev 타입 번호는 지어낸 값입니다.
 
 ### JSON 보기
 
@@ -839,9 +870,10 @@ Entity ID 보기는 hypervisor 와 VM 마다 [OTLP 지표](#otlp-지표)에 붙�
 - VM 의 `hypervisor` 는 그 VM 이 들어 있는 노드의 `hostname`, `gpu_index` 는 그 GPU 의 `index` 여야 하고,
   `flavor_id` 는 `flavors` 에 있어야 합니다.
 - VGPU GPU: 모두 `profile` 이 있고, VM 수는 `profile.max_instances` 이하이며, 모든 VM 에 `vgpu_uuid` 가 있습니다.
-- MIG GPU: 인스턴스 `slices` 합이 모델의 slice 수(A100·H100 은 7, RTX PRO 6000 Blackwell 은 4, 카탈로그에 없는 모델은 7)
-  이하이고, `gpu_instance_id` 는 GPU 안에서 겹치지 않으며, VM 의 `mig_gpu_instance_id` 는 그 GPU 의 인스턴스를 가리키고,
-  인스턴스 하나의 VM 수는 그 `vgpu_profile` 의 `per_gpu_instance`(비면 1) 이하이며, 모든 VM 에 `vgpu_uuid` 가 있습니다.
+- MIG GPU: 인스턴스 `slices` 합이 모델의 slice 수(A100·H100·B200 은 7, RTX PRO 6000 Blackwell 은 4, 카탈로그에 없는 모델은 7)
+  이하이고, 한 MIG 프로필의 인스턴스 수는 카탈로그에 있는 그 프로필의 `max_per_gpu` 이하이며(넘으면
+  `hypervisor emu-mig-04 gpu 0: 2 1g.23gb+me instances, more than the 1 one GPU allows` 처럼 나옴),
+  `gpu_instance_id` 는 GPU 안에서 겹치지 않으며, VM 의 `mig_gpu_instance_id` 는 그 GPU 의 인스턴스를 가리키고, 인스턴스 하나의 VM 수는 그 `vgpu_profile` 의 `per_gpu_instance`(비면 1) 이하이며, 모든 VM 에 `vgpu_uuid` 가 있습니다.
 - PASSTHROUGH GPU: VM 은 하나까지이고, VM 에 `vgpu_uuid` 가 없습니다.
 - VGPU 와 PASSTHROUGH GPU 에서 `mig_gpu_instance_id` 는 `-1` 입니다.
 

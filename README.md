@@ -315,7 +315,7 @@ curl -s -X PUT http://localhost:15080/api/v1/settings \
 | `GET /api/v1/tag-keys` | The tag keys (`influxdb`) and label keys (`otlp`) the saved topology sends before any rule, with an example value each. See [Tag and label rules](#tag-and-label-rules) |
 | `GET`, `PUT /api/v1/topology`, `POST /api/v1/topology/reset` | The saved topology. `PUT` saves it as sent, without filling empty fields |
 | `POST /api/v1/topology/fill` | Fills the empty fields of the topology in the body and lists its problems. Saves nothing |
-| `GET /api/v1/topology/catalog` | GPU models, profiles and flavors the editor offers, with the types (`modes`) and MIG slice count (`max_mig_slices`) of each model |
+| `GET /api/v1/topology/catalog` | GPU models, profiles and flavors the editor offers, with the types (`modes`) and MIG slice count (`max_mig_slices`) of each model, and the most instances one GPU holds (`max_per_gpu`) of each MIG profile that has such a limit |
 
 A rejected save answers 400 with every problem, for example
 `{"error":"validation failed","problems":["sink \"y\": db is empty"]}`. Unknown keys are rejected as typos.
@@ -569,15 +569,24 @@ The tab has three views: **Editor**, **JSON** and **Entity IDs**.
   any node. A new GPU takes the node's default type when the model supports it, and otherwise the first type the
   model supports (see the table below). A node whose GPUs have different types shows one type tag per type in its header.
 - Drag a VM onto another GPU to move it. Drop a node, GPU or VM on the delete area of the palette to delete it.
+- **+ Add GPU** at the foot of a node card opens the list of GPU models for that node. Each model shows a chip per type
+  it runs in: click a chip to add the GPU in that type, or the model name to add it in the type it would get when
+  dragged.
+- The node's properties also add a GPU: pick a model, then a type from the types that model runs in (the default is
+  preselected), and press **Add GPU**.
 - Right-click a node, GPU or VM for a menu, or press Shift+F10 or the menu key on the focused one. A node's menu adds a GPU
-  of any model or deletes the node, a GPU's menu adds a VM, changes the GPU's type or deletes the GPU, and a VM's
-  menu deletes the VM. **Delete** deletes the selected node, GPU or VM.
+  of any model or deletes the node, a GPU's menu adds a VM, adds a GPU to the same node (**Add GPU to this node**),
+  changes the GPU's type or deletes the GPU, and a VM's menu deletes the VM. **Delete** deletes the selected node, GPU or VM.
+- A vGPU GPU shows the short name of its vGPU type in its header (`DC-24Q` for `NVIDIA RTX Pro 6000 Blackwell DC-24Q`,
+  `T4-4Q` for `GRID T4-4Q`); hover it for the full name.
 - A drop that breaks a rule is refused on the spot with the reason: a passthrough GPU takes one VM, a vGPU GPU takes
   up to the profile's maximum, a GPU instance takes as many VMs as its vGPU type seats (one, or 2 to 4 for a time-sliced
-  type), and the instances of a MIG GPU fit in the slices of its model (7 on A100 and H100, 4 on RTX PRO 6000 Blackwell).
+  type), and the instances of a MIG GPU fit in the slices of its model (7 on A100, H100 and B200, 4 on RTX PRO 6000
+  Blackwell) and in the most instances of each MIG profile one GPU holds (see the table below). The list of instances
+  to add leaves out a profile once the GPU has that many.
 - Click a node, GPU or VM to edit it in **Properties**: names, sizes, IPs, flavor, the node's **Default type**, the
-  GPU's **Type**, vGPU profile, MIG instances with the vGPU type of each instance (a type that seats several VMs shows
-  how many, such as `DC-4-24C (4 VMs)`), and `entity_id`.
+  GPU's **Type**, vGPU profile, MIG instances with the vGPU type of each instance (each type shows its memory and how
+  many VMs it seats, such as `DC-4-24C · 24 GB · 4 VMs`), and `entity_id`.
 - Changing a GPU's type keeps its VMs and fits them to the new type. A GPU that becomes MIG gets one instance of the
   smallest profile per VM. VMs that do not fit (a second VM on a passthrough GPU, VMs past the profile's maximum,
   VMs with no MIG slices left) are deleted, and a message names them. Changing an instance's vGPU type to one that seats
@@ -599,6 +608,7 @@ GPU models the editor offers, and the types they can be used in:
 | NVIDIA L40S | PASSTHROUGH | - | - | - |
 | NVIDIA A100-PCIE-40GB | PASSTHROUGH | - | - | - |
 | NVIDIA RTX PRO 6000 Blackwell Server Edition | VGPU, MIG, PASSTHROUGH | DC-8Q to DC-96Q and DC-8C to DC-96C (8, 12, 16, 24, 32, 48 and 96 GB each), DC-24Q first | 1g.24gb, 2g.48gb, 4g.96gb | 4 |
+| NVIDIA B200 | VGPU, MIG, PASSTHROUGH | B200X-180C | 1g.23gb, 1g.23gb+me, 1g.45gb, 2g.45gb, 3g.90gb, 4g.90gb, 7g.180gb | 7 |
 
 The first vGPU profile of a model is the one a new GPU gets. Each MIG profile lists the vGPU types an instance can
 carry, the first being the default: one per instance on A100 and H100. On RTX PRO 6000 Blackwell a Q (graphics) and a
@@ -611,12 +621,36 @@ on 4g.96gb), and time-sliced C types let several VMs share one instance:
 | 2g.48gb | DC-2-24C (2), DC-2-16C (3), DC-2-12C (4) |
 | 4g.96gb | DC-4-48C (2), DC-4-32C (3), DC-4-24C (4) |
 
+Some MIG profiles have a most-per-GPU count besides the slices they take (`max_per_gpu` in the catalog). On B200 each
+MIG profile carries one C type that uses the whole instance:
+
+| GPU model | MIG profile | vGPU type | Most per GPU |
+|-----------|-------------|-----------|--------------|
+| RTX PRO 6000 Blackwell | 1g.24gb | DC-1-24Q, DC-1-24C and the time-sliced types | 4 |
+| RTX PRO 6000 Blackwell | 2g.48gb | DC-2-48Q, DC-2-48C and the time-sliced types | 2 |
+| RTX PRO 6000 Blackwell | 4g.96gb | DC-4-96Q, DC-4-96C and the time-sliced types | 1 |
+| B200 | 1g.23gb | B200X-1-23C | 7 |
+| B200 | 1g.23gb+me | B200X-1-23CME | 1 |
+| B200 | 1g.45gb | B200X-1-45C | 4 |
+| B200 | 2g.45gb | B200X-2-45C | 3 |
+| B200 | 3g.90gb | B200X-3-90C | 2 |
+| B200 | 4g.90gb | B200X-4-90C | 1 |
+| B200 | 7g.180gb | B200X-7-180C | 1 |
+
+A100 and H100 have no such count; only their slices limit them.
+
 The RTX PRO 6000 Blackwell is in this list only; the default topology does not use it. Its name, PCI device id (2bb5),
 memory, VBIOS and architecture, the memory and GI IDs (1, 2) of 2g.48gb and the form of the vGPU names come from a
 captured nvidia-smi output. The vGPU sizes and maximum counts follow NVIDIA's vGPU type table for this board, and those
 of the time-sliced types, with the VMs per instance, follow NVIDIA AI Enterprise's MIG-backed vGPU table for it.
 The memory of 1g.24gb and 4g.96gb and the GI IDs of 1g.24gb (3 to 6) are estimates, and the mdev type numbers
 (`nvidia-NNN`) are made up as for the other models.
+
+The B200 (HGX B200 180GB) is in this list only as well, and none of it is measured on a real node. Its vGPU types, their
+memory and maximum counts, and the MIG profiles with their most-per-GPU counts follow NVIDIA AI Enterprise's Blackwell
+vGPU tables for this board. Its PCI device id (2901), memory (184320 MiB), the form of its vGPU names, the memory of each
+MIG profile, the GI ID order (laid out like the A100's) and the power limit and clocks in its metrics (from the public
+board specification) are estimates, and its VBIOS and mdev type numbers are made up.
 
 ### JSON view
 
@@ -848,8 +882,10 @@ The editor, Apply and every save check these and list every problem found.
 - Each VM's `hypervisor` is the `hostname` of the node it is listed under, its `gpu_index` is the `index` of that GPU,
   and its `flavor_id` exists in `flavors`.
 - VGPU GPUs: every one has a `profile` and at most `profile.max_instances` VMs, and every VM has a `vgpu_uuid`.
-- MIG GPUs: the `slices` of the instances add up to the slice count of the model or less (7 on A100 and H100, 4 on
-  RTX PRO 6000 Blackwell, 7 for a model the catalog does not know), `gpu_instance_id` is unique within the GPU, every VM's
+- MIG GPUs: the `slices` of the instances add up to the slice count of the model or less (7 on A100, H100 and B200, 4 on
+  RTX PRO 6000 Blackwell, 7 for a model the catalog does not know), a GPU has no more instances of a MIG profile than the
+  profile's `max_per_gpu` in the catalog (for example `hypervisor emu-mig-04 gpu 0: 2 1g.23gb+me instances, more than the 1
+  one GPU allows`), `gpu_instance_id` is unique within the GPU, every VM's
   `mig_gpu_instance_id` names an instance on its GPU, an instance has at most as many VMs as the `per_gpu_instance` of its
   `vgpu_profile` (1 when empty), and every VM has a `vgpu_uuid`.
 - PASSTHROUGH GPUs: at most one VM, and VMs have no `vgpu_uuid`.
