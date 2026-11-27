@@ -101,6 +101,11 @@ func (t *Topology) Validate() error {
 				fail("%s: duplicate gpu index", where)
 			}
 			gpuIndex[g.Index] = true
+			switch g.Mode {
+			case "", ModeVGPU, ModeMIG, ModePassthrough:
+			default:
+				fail("%s: unknown mode %q", where, g.Mode)
+			}
 			unique("gpu uuid", g.UUID)
 			unique("gpu bus_id", h.Hostname+"/"+g.BusID)
 			t.validateGPU(h, g, where, fail, unique)
@@ -116,11 +121,12 @@ func (t *Topology) Validate() error {
 // validateGPU checks one GPU and the VMs on it against the constraints of its mode.
 func (t *Topology) validateGPU(h *Hypervisor, g *GPU, where string,
 	fail func(string, ...any), unique func(string, string)) {
+	mode := h.GPUMode(g)
 	instances := map[int]*MIGInstance{}
-	switch h.Mode {
+	switch mode {
 	case ModeVGPU:
 		if g.Profile == nil {
-			fail("%s: GPU on a VGPU node has no profile", where)
+			fail("%s: VGPU GPU has no profile", where)
 		} else if len(g.VMs) > g.Profile.MaxInstances {
 			fail("%s: %d VMs exceed the vGPU maximum of %d", where, len(g.VMs), g.Profile.MaxInstances)
 		}
@@ -137,8 +143,8 @@ func (t *Topology) validateGPU(h *Hypervisor, g *GPU, where string,
 			instances[mi.GPUInstanceID] = mi
 			slices += mi.Slices
 		}
-		if slices > 7 {
-			fail("%s: MIG slice total %d exceeds 7", where, slices)
+		if n := MIGSlices(g.ModelName); slices > n {
+			fail("%s: MIG slice total %d exceeds %d", where, slices, n)
 		}
 	case ModePassthrough:
 		if len(g.VMs) > 1 {
@@ -168,10 +174,10 @@ func (t *Topology) validateGPU(h *Hypervisor, g *GPU, where string,
 		if t.FlavorByID(vm.FlavorID) == nil {
 			fail("%s: flavor %q not found", vw, vm.FlavorID)
 		}
-		if vm.Mode != h.Mode {
-			fail("%s: mode %q does not match hypervisor mode %q", vw, vm.Mode, h.Mode)
+		if vm.Mode != mode {
+			fail("%s: mode %q does not match GPU mode %q", vw, vm.Mode, mode)
 		}
-		if h.Mode == ModePassthrough {
+		if mode == ModePassthrough {
 			if vm.VGPUUUID != "" {
 				fail("%s: passthrough VM has a vgpu_uuid", vw)
 			}
@@ -180,7 +186,7 @@ func (t *Topology) validateGPU(h *Hypervisor, g *GPU, where string,
 		} else {
 			unique("vm vgpu_uuid", vm.VGPUUUID)
 		}
-		if h.Mode == ModeMIG {
+		if mode == ModeMIG {
 			if instances[vm.MIGGPUInstanceID] == nil {
 				fail("%s: GPU instance %d not found on %s", vw, vm.MIGGPUInstanceID, where)
 			} else if prev, ok := used[vm.MIGGPUInstanceID]; ok {
@@ -189,7 +195,7 @@ func (t *Topology) validateGPU(h *Hypervisor, g *GPU, where string,
 				used[vm.MIGGPUInstanceID] = vm.Name
 			}
 		} else if vm.MIGGPUInstanceID != -1 {
-			fail("%s: mig_gpu_instance_id is %d on a non-MIG node (must be -1)", vw, vm.MIGGPUInstanceID)
+			fail("%s: mig_gpu_instance_id is %d on a non-MIG GPU (must be -1)", vw, vm.MIGGPUInstanceID)
 		}
 	}
 }

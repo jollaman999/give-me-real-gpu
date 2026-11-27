@@ -13,9 +13,6 @@ import (
 // gpuScope is the instrumentation scope of the GPU receiver's metrics.
 const gpuScope = "github.com/jollaman999/give-me-real-gpu/internal/otelgen/nvidiagpu"
 
-// migSlices is the number of compute slices of a MIG capable GPU (A100, H100).
-const migSlices = 7
-
 // gpuSpec holds the model dependent ranges used to make values plausible.
 type gpuSpec struct {
 	tdp      float64 // board power limit (W)
@@ -45,10 +42,13 @@ func specFor(model, arch string) gpuSpec {
 		s = gpuSpec{tdp: 150, idleTemp: 36, smBoost: 1695, smIdle: 210, memBusy: 6251, memIdle: 405}
 	case strings.Contains(m, "L40"):
 		s = gpuSpec{tdp: 350, idleTemp: 35, smBoost: 2520, smIdle: 210, memBusy: 9001, memIdle: 405}
+	case strings.Contains(m, "RTX PRO 6000"):
+		s = gpuSpec{tdp: 600, idleTemp: 30, smBoost: 2430, smIdle: 180, memBusy: 12481, memIdle: 405}
 	default:
 		s = gpuSpec{tdp: 300, idleTemp: 34, smBoost: 1500, smIdle: 300, memBusy: 5000, memIdle: 405}
 	}
-	s.fan = strings.Contains(m, "RTX") || strings.Contains(m, "GEFORCE") || strings.Contains(m, "QUADRO")
+	s.fan = (strings.Contains(m, "RTX") || strings.Contains(m, "GEFORCE") || strings.Contains(m, "QUADRO")) &&
+		!strings.Contains(m, "SERVER EDITION")
 	switch arch {
 	case "Hopper", "Blackwell":
 		s.gpm = true
@@ -60,6 +60,7 @@ func specFor(model, arch string) gpuSpec {
 type physGPU struct {
 	g         *topology.GPU
 	host      *topology.Hypervisor
+	mode      topology.GPUMode // how this GPU is handed out (the node's mode unless the GPU sets its own)
 	spec      gpuSpec
 	r         *rand.Rand
 	gpmR      *rand.Rand
@@ -76,7 +77,7 @@ func newPhysGPU(seed int64, h *topology.Hypervisor, gp *topology.GPU) *physGPU {
 	r := newRand(seed, "otel/gpu/"+gp.UUID)
 	sp := specFor(gp.ModelName, gp.Arch)
 	return &physGPU{
-		g: gp, host: h, spec: sp, r: r,
+		g: gp, host: h, mode: h.GPUMode(gp), spec: sp, r: r,
 		gpmR:   newRand(seed, "otel/gpm/"+gp.UUID),
 		temp:   sp.idleTemp + r.Float64()*4,
 		eccAgg: float64(hashKey(gp.UUID) % 3),
@@ -98,7 +99,7 @@ type vmGPU struct {
 	fbUsed float64
 }
 
-func newVMGPU(seed int64, r *rand.Rand, h *topology.Hypervisor, pg *physGPU, vm *topology.VM) *vmGPU {
+func newVMGPU(seed int64, r *rand.Rand, pg *physGPU, vm *topology.VM) *vmGPU {
 	vg := &vmGPU{
 		vm: vm, phys: pg, r: r,
 		xr:     newRand(seed, "otel/xid/"+vm.ID),
@@ -106,7 +107,7 @@ func newVMGPU(seed int64, r *rand.Rand, h *topology.Hypervisor, pg *physGPU, vm 
 		fbFrac: newWalk(r, 0.02, 0.92, 0.01, 0.005),
 		dec:    newWalk(r, 0, 20, 1, 0.01),
 	}
-	if h.Mode == topology.ModeMIG {
+	if pg.mode == topology.ModeMIG {
 		for _, mi := range pg.g.MIGInstances {
 			if mi.GPUInstanceID == vm.MIGGPUInstanceID {
 				vg.mig = mi
@@ -117,13 +118,10 @@ func newVMGPU(seed int64, r *rand.Rand, h *topology.Hypervisor, pg *physGPU, vm 
 }
 
 // hostSees reports whether nvidia-smi on the hypervisor lists gp. It needs the
-// host driver; a passthrough GPU given to a VM is bound to vfio-pci and the
-// host driver does not see it.
+// host driver; a passthrough GPU is bound to vfio-pci, with or without a VM,
+// and the host driver does not see it.
 func hostSees(h *topology.Hypervisor, gp *topology.GPU) bool {
-	if h.DriverVersion == "" {
-		return false
-	}
-	return !(h.Mode == topology.ModePassthrough && len(gp.VMs) > 0)
+	return h.DriverVersion != "" && h.GPUMode(gp) != topology.ModePassthrough
 }
 
 // viewKind is who looks at a GPU with nvidia-smi.
@@ -147,12 +145,12 @@ type gpuView struct {
 }
 
 // guestView is the GPU the VM sees, nil without a guest driver.
-func guestView(h *topology.Hypervisor, pg *physGPU, vg *vmGPU) *gpuView {
+func guestView(pg *physGPU, vg *vmGPU) *gpuView {
 	if vg.vm.GuestDriverVersion == "" {
 		return nil
 	}
 	v := &gpuView{index: 0, phys: pg, vg: vg}
-	switch h.Mode {
+	switch pg.mode {
 	case topology.ModePassthrough:
 		v.kind, v.uuid, v.name = viewPassthrough, pg.g.UUID, pg.g.ModelName
 		return v
@@ -169,8 +167,8 @@ func guestView(h *topology.Hypervisor, pg *physGPU, vg *vmGPU) *gpuView {
 	return v
 }
 
-// vgpuProfile is the vGPU type of the VM: the GPU profile on VGPU nodes and the
-// MIG-backed vGPU type of the instance on MIG nodes. nil if unknown.
+// vgpuProfile is the vGPU type of the VM: the GPU profile on a VGPU GPU and the
+// MIG-backed vGPU type of the instance on a MIG GPU. nil if unknown.
 func vgpuProfile(vg *vmGPU) *topology.VGPUProfile {
 	if vg.mig != nil {
 		return vg.mig.VGPU
@@ -206,7 +204,7 @@ func vgpuFramebuffer(vg *vmGPU) float64 {
 //   - passthrough: the single VM owns the GPU.
 func (pg *physGPU) step() {
 	pg.util, pg.fbUsed, pg.decUtil = 0, 0, 0
-	switch pg.host.Mode {
+	switch pg.mode {
 	case topology.ModeVGPU:
 		sum := 0.0
 		for _, vg := range pg.vms {
@@ -233,7 +231,7 @@ func (pg *physGPU) step() {
 			}
 			weighted += vg.util * float64(slices)
 		}
-		pg.util = weighted / migSlices
+		pg.util = weighted / float64(topology.MIGSlices(pg.g.ModelName))
 	case topology.ModePassthrough:
 		for _, vg := range pg.vms {
 			vg.util = round(vg.demand.next(vg.r), 0)
@@ -244,14 +242,14 @@ func (pg *physGPU) step() {
 	pg.util = clamp(pg.util, 0, 100)
 	for _, vg := range pg.vms {
 		fb := vgpuFramebuffer(vg)
-		if pg.host.Mode == topology.ModePassthrough {
+		if pg.mode == topology.ModePassthrough {
 			fb = total
 		}
 		vg.fbUsed = round(vg.fbFrac.next(vg.r)*fb, 0)
 		d := round(vg.dec.next(vg.r)*vg.util/100, 0)
 		pg.decUtil += d
 	}
-	if pg.host.Mode == topology.ModePassthrough && len(pg.vms) > 0 {
+	if pg.mode == topology.ModePassthrough && len(pg.vms) > 0 {
 		pg.fbUsed = pg.vms[0].fbUsed
 	}
 	pg.fbUsed = clamp(round(pg.fbUsed, 0), 0, total)
@@ -276,7 +274,7 @@ func (pg *physGPU) step() {
 
 // pstate is the performance state number. A MIG enabled GPU stays at P0.
 func (pg *physGPU) pstate() int {
-	if pg.host.Mode == topology.ModeMIG || pg.util >= 3 {
+	if pg.mode == topology.ModeMIG || pg.util >= 3 {
 		return 0
 	}
 	return 8
@@ -300,7 +298,7 @@ type smiValue struct {
 func (v *gpuView) smiValues() []smiValue {
 	pg := v.phys
 	board := v.kind == viewHost || v.kind == viewPassthrough
-	withUtil := v.kind == viewVGPU || v.kind == viewPassthrough || (v.kind == viewHost && pg.host.Mode != topology.ModeMIG)
+	withUtil := v.kind == viewVGPU || v.kind == viewPassthrough || (v.kind == viewHost && pg.mode != topology.ModeMIG)
 
 	util, total, used, dec := pg.util, float64(pg.g.MemoryMiB), pg.fbUsed, pg.decUtil
 	switch v.kind {
@@ -456,7 +454,7 @@ func (a *agent) emitGPU(rm *otlp.ResourceMetrics, e *emitter) {
 		}
 	}
 	for _, v := range a.gpus {
-		migMode := v.phys.host.Mode == topology.ModeMIG
+		migMode := v.phys.mode == topology.ModeMIG
 		for _, t := range v.gpmTargets() {
 			for _, f := range gpmFields {
 				attrs := ids(v)
@@ -512,7 +510,7 @@ func (g *Generator) xidEvents() {
 		}
 		code := pickXID(vg.xr)
 		target := vg.phys.hostAgent
-		if vg.phys.host.Mode == topology.ModePassthrough {
+		if vg.phys.mode == topology.ModePassthrough {
 			target = nil
 			if len(vg.agent.gpus) > 0 {
 				target = vg.agent

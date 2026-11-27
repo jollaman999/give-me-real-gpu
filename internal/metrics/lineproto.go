@@ -18,7 +18,7 @@ var (
 // batch collects line protocol lines in the order they are added.
 type batch struct {
 	lines []string
-	rules []tagrules.Rule // applied to the tags of every point
+	rules []tagrules.Rule  // applied to the tags of every point
 	keys  *tagrules.KeySet // when set, records the tags of every point before the rules
 }
 

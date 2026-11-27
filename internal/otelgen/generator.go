@@ -97,11 +97,11 @@ func NewGenerator(t *topology.Topology, opt Options) *Generator {
 					uptime0:  time.Duration(1+vr.Intn(90))*24*time.Hour + time.Duration(vr.Intn(86400))*time.Second,
 				}
 				va.sys = newVMSystem(vr, vm, va.uptime0)
-				vg := newVMGPU(opt.Seed, vr, h, pg, vm)
+				vg := newVMGPU(opt.Seed, vr, pg, vm)
 				pg.vms = append(pg.vms, vg)
 				g.vgpus = append(g.vgpus, vg)
 				vg.agent = va
-				if v := guestView(h, pg, vg); v != nil {
+				if v := guestView(pg, vg); v != nil {
 					va.gpus = append(va.gpus, v)
 				}
 				vmAgents[vm] = va

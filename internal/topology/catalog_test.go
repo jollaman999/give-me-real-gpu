@@ -19,6 +19,7 @@ func TestDefaultCatalog(t *testing.T) {
 		"NVIDIA H100 80GB HBM3": {ModeMIG, ModePassthrough},
 		"NVIDIA L40S":           {ModePassthrough},
 		"NVIDIA A100-PCIE-40GB": {ModePassthrough},
+		"NVIDIA RTX PRO 6000 Blackwell Server Edition": {ModeVGPU, ModeMIG, ModePassthrough},
 	}
 	if len(c.GPUModels) != len(want) {
 		t.Fatalf("got %d models, want %d", len(c.GPUModels), len(want))
@@ -77,7 +78,7 @@ func clearFilled(top *Topology) {
 		for _, g := range h.GPUs {
 			g.UUID, g.BusID, g.HostBDF = "", "", ""
 			g.DeviceID, g.MemoryMiB, g.VBIOS, g.Arch = "", 0, "", ""
-			if h.Mode == ModeVGPU {
+			if h.GPUMode(g) == ModeVGPU {
 				g.Profile = nil
 			}
 			for _, mi := range g.MIGInstances {
@@ -87,7 +88,7 @@ func clearFilled(top *Topology) {
 				vm.ID, vm.InstanceName, vm.FlavorID, vm.IP, vm.VGPUUUID = "", "", "", "", ""
 				vm.Hypervisor, vm.Mode, vm.GuestBDF, vm.GuestDriverVersion = "", "", "", ""
 				vm.VCPUs, vm.MemoryMB, vm.DiskGB = 0, 0, 0
-				if h.Mode == ModeMIG {
+				if h.GPUMode(g) == ModeMIG {
 					vm.MIGGPUInstanceID = -1
 				}
 			}

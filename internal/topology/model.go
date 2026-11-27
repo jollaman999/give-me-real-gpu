@@ -31,11 +31,11 @@ type Hypervisor struct {
 	UUID     string  `json:"uuid"`      // nova hypervisor uuid (used as the id from microversion 2.53 on)
 	Hostname string  `json:"hostname"`  // hypervisor_hostname = service host = InfluxDB host tag
 	HostIP   string  `json:"host_ip"`   // nova host_ip, the ip field of net metrics
-	Mode     GPUMode `json:"mode"`      // how this node partitions its GPUs
+	Mode     GPUMode `json:"mode"`      // mode of GPUs that set none, and the default mode of new GPUs
 	VCPUs    int     `json:"vcpus"`     // physical vCPU count
 	MemoryMB int     `json:"memory_mb"` // physical memory
 	LocalGB  int     `json:"local_gb"`  // local disk
-	// Host nvidia driver. Empty on passthrough nodes, since the host has no driver there.
+	// Host nvidia driver. Empty when every GPU is passthrough, since the host has no driver there.
 	DriverVersion string `json:"driver_version"`
 	CUDAVersion   string `json:"cuda_version"` // host CUDA driver version (DCGM_FI_CUDA_DRIVER_VERSION format, e.g. 13020)
 	GPUs          []*GPU `json:"gpus"`
@@ -54,10 +54,12 @@ type GPU struct {
 	MemoryMiB int    `json:"memory_mib"` // total framebuffer
 	VBIOS     string `json:"vbios"`      // five dot-separated hex pairs
 	Arch      string `json:"arch"`       // e.g. Ampere, Hopper, Ada Lovelace, Turing
+	// How this GPU is handed out. Empty means the hypervisor's mode (see Hypervisor.GPUMode).
+	Mode GPUMode `json:"mode,omitempty"`
 
-	// vGPU type created on this GPU on a VGPU node. nil in other modes.
+	// vGPU type created on this GPU in VGPU mode. nil in other modes.
 	Profile *VGPUProfile `json:"profile,omitempty"`
-	// GPU instances this GPU is split into on a MIG node. Empty in other modes.
+	// GPU instances this GPU is split into in MIG mode. Empty in other modes.
 	MIGInstances []*MIGInstance `json:"mig_instances,omitempty"`
 	// VMs using this GPU. VGPU allows several, MIG at most one per instance, passthrough at most one.
 	// An empty list means the GPU is unassigned.
@@ -94,7 +96,7 @@ type VM struct {
 	Mode         GPUMode `json:"mode"`
 	// mdev uuid of the vGPU (including MIG-backed). Used as the vgpu_uuid tag and as the GPU UUID seen inside the VM. Empty for passthrough.
 	VGPUUUID string `json:"vgpu_uuid,omitempty"`
-	// GPU instance id attached on a MIG node. -1 when not MIG.
+	// GPU instance id attached on a MIG GPU. -1 when not MIG.
 	MIGGPUInstanceID int `json:"mig_gpu_instance_id"`
 	// PCI address seen inside the VM (e.g. 00:05.0). Used for the gpu_vm_mapping guest_bdf tag and the PCI_BUSID of VM dcgm.
 	GuestBDF string `json:"guest_bdf"`
@@ -124,6 +126,35 @@ func EntityID(name, override string) string {
 		return override
 	}
 	return StableUUID("entity", name)
+}
+
+// GPUMode is the mode g is handed out in: g.Mode when set, otherwise the hypervisor's mode.
+func (h *Hypervisor) GPUMode(g *GPU) GPUMode {
+	if g != nil && g.Mode != "" {
+		return g.Mode
+	}
+	return h.Mode
+}
+
+// Modes returns the modes the GPUs of h are handed out in, each once, in the order VGPU, MIG, PASSTHROUGH.
+// A hypervisor without GPUs (or whose GPUs all have unknown modes) returns its own mode.
+func (h *Hypervisor) Modes() []GPUMode {
+	seen := map[GPUMode]bool{}
+	for _, g := range h.GPUs {
+		if g != nil {
+			seen[h.GPUMode(g)] = true
+		}
+	}
+	var out []GPUMode
+	for _, m := range []GPUMode{ModeVGPU, ModeMIG, ModePassthrough} {
+		if seen[m] {
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		return []GPUMode{h.Mode}
+	}
+	return out
 }
 
 // AllVMs returns every VM, ordered by hypervisor and then by GPU.

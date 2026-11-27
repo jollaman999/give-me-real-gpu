@@ -81,7 +81,8 @@ var (
 
 // migProfile is one kind of MIG GPU instance.
 // giIDs is the GI ID order nvidia-smi assigns when the GPU is filled with this kind (1g 7..13, 2g 3..5, 3g 1..2, 7g 0).
-// vgpu is the MIG-backed vGPU type attached to the instance. The type numbers (nvidia-NNN) are not measured.
+// vgpu is the MIG-backed vGPU type attached to the instance by default, alt the other types that also use
+// the whole instance. The type numbers (nvidia-NNN) are not measured.
 type migProfile struct {
 	name   string
 	slices int
@@ -89,21 +90,22 @@ type migProfile struct {
 	giIDs  []int
 	vgpu   VGPUProfile
 	flavor string
+	alt    []VGPUProfile
 }
 
 var (
 	migA100_1g = migProfile{"1g.10gb", 1, 9728, []int{7, 8, 9, 10, 11, 12, 13},
-		VGPUProfile{"NVIDIA A100D-1-10C", "nvidia-699", 10240, 7}, "emu-mig-1g"}
+		VGPUProfile{"NVIDIA A100D-1-10C", "nvidia-699", 10240, 7}, "emu-mig-1g", nil}
 	migA100_2g = migProfile{"2g.20gb", 2, 19968, []int{3, 4, 5},
-		VGPUProfile{"NVIDIA A100D-2-20C", "nvidia-700", 20480, 3}, "emu-mig-2g"}
+		VGPUProfile{"NVIDIA A100D-2-20C", "nvidia-700", 20480, 3}, "emu-mig-2g", nil}
 	migA100_3g = migProfile{"3g.40gb", 3, 40192, []int{1, 2},
-		VGPUProfile{"NVIDIA A100D-3-40C", "nvidia-701", 40960, 2}, "emu-mig-3g"}
+		VGPUProfile{"NVIDIA A100D-3-40C", "nvidia-701", 40960, 2}, "emu-mig-3g", nil}
 	migA100_7g = migProfile{"7g.80gb", 7, 80896, []int{0},
-		VGPUProfile{"NVIDIA A100D-7-80C", "nvidia-702", 81920, 1}, "emu-mig-7g"}
+		VGPUProfile{"NVIDIA A100D-7-80C", "nvidia-702", 81920, 1}, "emu-mig-7g", nil}
 	migH100_1g = migProfile{"1g.10gb", 1, 9984, []int{7, 8, 9, 10, 11, 12, 13},
-		VGPUProfile{"NVIDIA H100XM-1-10C", "nvidia-1074", 10240, 7}, "emu-mig-1g"}
+		VGPUProfile{"NVIDIA H100XM-1-10C", "nvidia-1074", 10240, 7}, "emu-mig-1g", nil}
 	migH100_3g = migProfile{"3g.40gb", 3, 40448, []int{1, 2},
-		VGPUProfile{"NVIDIA H100XM-3-40C", "nvidia-1076", 40960, 2}, "emu-mig-3g"}
+		VGPUProfile{"NVIDIA H100XM-3-40C", "nvidia-1076", 40960, 2}, "emu-mig-3g", nil}
 )
 
 // migPlan is the layout of one MIG GPU: create instances GPU instances and attach a VM to the first vms of them.

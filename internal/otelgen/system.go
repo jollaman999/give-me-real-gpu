@@ -577,7 +577,7 @@ func (s *sysState) addProc(r *rand.Rand, name, path, cmdline, owner string, ppid
 	s.procs = append(s.procs, p)
 }
 
-// addHostProcesses lists the hypervisor's processes: one qemu (and on vGPU and MIG nodes one
+// addHostProcesses lists the hypervisor's processes: one qemu (and for a VM on a vGPU or MIG GPU one
 // nvidia-vgpu-mgr) per VM next to the compute daemons.
 func (s *sysState) addHostProcesses(r *rand.Rand, h *topology.Hypervisor, vms []*vmGPU) {
 	boot := 5 * time.Second
@@ -600,7 +600,7 @@ func (s *sysState) addHostProcesses(r *rand.Rand, h *topology.Hypervisor, vms []
 		vmMem := float64(max(1024, vm.MemoryMB)) * mib
 		s.addProc(r, "qemu-system-x86_64", "/usr/bin/qemu-system-x86_64", cmd, "libvirt-qemu", 1,
 			float64(max(1, vm.VCPUs))*0.9, vmMem*0.4, vmMem*1.02, 2*mib, start)
-		if h.Mode == topology.ModeVGPU || h.Mode == topology.ModeMIG {
+		if m := vg.phys.mode; m == topology.ModeVGPU || m == topology.ModeMIG {
 			s.addProc(r, "nvidia-vgpu-mgr", "/usr/bin/nvidia-vgpu-mgr", "/usr/bin/nvidia-vgpu-mgr", "root", 1, 0.08, 35*mib, 45*mib, 0,
 				start+time.Duration(i)*time.Millisecond)
 		}

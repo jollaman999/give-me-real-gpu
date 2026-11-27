@@ -484,7 +484,7 @@ func TestGPUViews(t *testing.T) {
 				s := vt[0]
 				temps := find(vid, "nvidia_smi.temperature.gpu")
 				gpm := find(vid, "nvml.gpm.sm.utilization")
-				switch h.Mode {
+				switch h.GPUMode(g) {
 				case topology.ModePassthrough:
 					if s.attrs["uuid"] != g.UUID || s.attrs["name"] != g.ModelName || s.value != float64(g.MemoryMiB) {
 						t.Errorf("%s: passthrough GPU %v %v", vm.Name, s.attrs, s.value)
@@ -494,7 +494,7 @@ func TestGPUViews(t *testing.T) {
 					}
 				default:
 					p := g.Profile
-					if h.Mode == topology.ModeMIG {
+					if h.GPUMode(g) == topology.ModeMIG {
 						for _, mi := range g.MIGInstances {
 							if mi.GPUInstanceID == vm.MIGGPUInstanceID {
 								p = mi.VGPU
@@ -509,13 +509,13 @@ func TestGPUViews(t *testing.T) {
 					}
 				}
 				wantGPM := 0
-				if g.Arch == "Hopper" && h.Mode != topology.ModeVGPU {
+				if g.Arch == "Hopper" && h.GPUMode(g) != topology.ModeVGPU {
 					wantGPM = 1
 				}
 				if len(gpm) != wantGPM {
 					t.Errorf("%s: %d GPM points, want %d", vm.Name, len(gpm), wantGPM)
 				}
-				if h.Mode == topology.ModeMIG && wantGPM == 1 && (gpm[0].attrs["mig"] != "true" || gpm[0].attrs["gpu_instance_id"] != "0") {
+				if h.GPUMode(g) == topology.ModeMIG && wantGPM == 1 && (gpm[0].attrs["mig"] != "true" || gpm[0].attrs["gpu_instance_id"] != "0") {
 					t.Errorf("%s: MIG guest GPM attrs %v", vm.Name, gpm[0].attrs)
 				}
 			}

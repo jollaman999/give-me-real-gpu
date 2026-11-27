@@ -328,7 +328,7 @@ func TestValidateRejects(t *testing.T) {
 		}, "passthrough GPU has 2 VMs"},
 		{"mode mismatch", func(tp *Topology) {
 			findGPU(tp, "emu-vgpu-01", 0).VMs[0].Mode = ModePassthrough
-		}, "hypervisor mode"},
+		}, "does not match GPU mode"},
 		{"vGPU maximum exceeded", func(tp *Topology) {
 			findGPU(tp, "emu-vgpu-02", 0).Profile.MaxInstances = 3
 		}, "exceed the vGPU maximum of 3"},

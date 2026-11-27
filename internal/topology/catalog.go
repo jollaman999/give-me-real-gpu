@@ -2,11 +2,12 @@ package topology
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
 
-// MaxMIGSlices is the number of compute slices one MIG GPU has.
+// MaxMIGSlices is the number of compute slices one MIG GPU has when its model is not in the catalog.
 const MaxMIGSlices = 7
 
 // Catalog lists the building blocks the topology editor offers: GPU models with the vGPU and MIG
@@ -24,12 +25,14 @@ type CatalogModel struct {
 	MemoryMiB int    `json:"memory_mib"`
 	VBIOS     string `json:"vbios"`
 	Arch      string `json:"arch"`
-	// Modes lists the node modes this model can be placed in. Passthrough works for every model,
+	// Modes lists the GPU modes this model can be used in. Passthrough works for every model,
 	// VGPU and MIG only when the catalog has a profile for the model.
 	Modes             []GPUMode     `json:"modes"`
 	VGPUProfiles      []CatalogVGPU `json:"vgpu_profiles"`
 	MIGProfiles       []CatalogMIG  `json:"mig_profiles"`
 	PassthroughFlavor string        `json:"passthrough_flavor"`
+	// MaxMIGSlices is the number of compute slices one GPU of this model has in MIG mode. 0 when it has no MIG profile.
+	MaxMIGSlices int `json:"max_mig_slices"`
 }
 
 // CatalogVGPU is a vGPU type and the flavor name VMs on it get.
@@ -40,13 +43,16 @@ type CatalogVGPU struct {
 
 // CatalogMIG is a MIG GPU instance kind and the flavor name VMs on it get.
 // GPUInstanceIDs is the order in which Fill hands out GI IDs for this kind.
+// VGPUProfiles are the MIG-backed vGPU types an instance of this kind can carry, the first one being
+// the default; VGPU is that first one.
 type CatalogMIG struct {
-	Name           string      `json:"name"`
-	Slices         int         `json:"slices"`
-	MemoryMiB      int         `json:"memory_mib"`
-	GPUInstanceIDs []int       `json:"gpu_instance_ids"`
-	VGPU           VGPUProfile `json:"vgpu_profile"`
-	Flavor         string      `json:"flavor"`
+	Name           string        `json:"name"`
+	Slices         int           `json:"slices"`
+	MemoryMiB      int           `json:"memory_mib"`
+	GPUInstanceIDs []int         `json:"gpu_instance_ids"`
+	VGPU           VGPUProfile   `json:"vgpu_profile"`
+	VGPUProfiles   []VGPUProfile `json:"vgpu_profiles"`
+	Flavor         string        `json:"flavor"`
 }
 
 // CatalogDefaults are the values Fill writes into empty fields.
@@ -79,14 +85,79 @@ const (
 
 // catalogMIG lists the MIG kinds per model. The order is the order the editor shows them in.
 var catalogMIG = map[string][]migProfile{
-	modelA100SXM80.name: {migA100_1g, migA100_2g, migA100_3g, migA100_7g},
-	modelH100HBM3.name:  {migH100_1g, migH100_3g},
+	modelA100SXM80.name:    {migA100_1g, migA100_2g, migA100_3g, migA100_7g},
+	modelH100HBM3.name:     {migH100_1g, migH100_3g},
+	modelRTXPro6000BW.name: {migRTXPro6000_1g, migRTXPro6000_2g, migRTXPro6000_4g},
+}
+
+// catalogMIGSlices is the number of compute slices per MIG capable model.
+var catalogMIGSlices = map[string]int{
+	modelA100SXM80.name:    7,
+	modelH100HBM3.name:     7,
+	modelRTXPro6000BW.name: 4,
+}
+
+// MIGSlices is the number of compute slices one GPU of the model has in MIG mode,
+// MaxMIGSlices for a model the catalog does not know as MIG capable.
+func MIGSlices(model string) int {
+	if n := catalogMIGSlices[model]; n > 0 {
+		return n
+	}
+	return MaxMIGSlices
+}
+
+// catalogModel is a model the catalog offers that the default topology does not use.
+type catalogModel struct {
+	model gpuModel
+	vgpu  []VGPUProfile // time-sliced vGPU types; the first one is the default for a new GPU
+}
+
+// RTX PRO 6000 Blackwell Server Edition. Name, device id, memory, VBIOS and arch come from a real
+// nvidia-smi -q -x; the vGPU names follow a real guest. The time-sliced Q (graphics) and C (compute)
+// types and their maximum counts follow the NVIDIA AI Enterprise vGPU type table for this board.
+// The mdev type numbers (nvidia-NNN) are not measured.
+var modelRTXPro6000BW = gpuModel{"NVIDIA RTX PRO 6000 Blackwell Server Edition", "2bb5", 97887, vbios("98", "02", "67", "00", "0A"), "Blackwell"}
+
+// MIG kinds of the RTX PRO 6000 Blackwell (4 slices). 2g.48gb memory and GI IDs 1, 2 are measured;
+// the 1g and 4g memory and the 1g GI IDs 3..6 are estimated with the same layout as the A100.
+// Each kind carries a Q (graphics) or a C (compute) MIG-backed vGPU type that uses the whole instance.
+var (
+	migRTXPro6000_1g = migProfile{"1g.24gb", 1, 23808, []int{3, 4, 5, 6},
+		VGPUProfile{"NVIDIA RTX Pro 6000 Blackwell DC-1-24Q", "nvidia-1187", 24576, 4}, migFlavorName("1g.24gb"),
+		[]VGPUProfile{{"NVIDIA RTX Pro 6000 Blackwell DC-1-24C", "nvidia-1197", 24576, 4}}}
+	migRTXPro6000_2g = migProfile{"2g.48gb", 2, 47744, []int{1, 2},
+		VGPUProfile{"NVIDIA RTX Pro 6000 Blackwell DC-2-48Q", "nvidia-1188", 49152, 2}, migFlavorName("2g.48gb"),
+		[]VGPUProfile{{"NVIDIA RTX Pro 6000 Blackwell DC-2-48C", "nvidia-1198", 49152, 2}}}
+	migRTXPro6000_4g = migProfile{"4g.96gb", 4, 95616, []int{0},
+		VGPUProfile{"NVIDIA RTX Pro 6000 Blackwell DC-4-96Q", "nvidia-1189", 98304, 1}, migFlavorName("4g.96gb"),
+		[]VGPUProfile{{"NVIDIA RTX Pro 6000 Blackwell DC-4-96C", "nvidia-1199", 98304, 1}}}
+)
+
+// catalogExtraModels are added after the default topology's models.
+var catalogExtraModels = []catalogModel{
+	{model: modelRTXPro6000BW, vgpu: []VGPUProfile{
+		{"NVIDIA RTX Pro 6000 Blackwell DC-24Q", "nvidia-1180", 24576, 4},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-8Q", "nvidia-1181", 8192, 12},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-12Q", "nvidia-1182", 12288, 8},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-16Q", "nvidia-1183", 16384, 6},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-32Q", "nvidia-1184", 32768, 3},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-48Q", "nvidia-1185", 49152, 2},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-96Q", "nvidia-1186", 98304, 1},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-8C", "nvidia-1190", 8192, 12},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-12C", "nvidia-1191", 12288, 8},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-16C", "nvidia-1192", 16384, 6},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-24C", "nvidia-1193", 24576, 4},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-32C", "nvidia-1194", 32768, 3},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-48C", "nvidia-1195", 49152, 2},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-96C", "nvidia-1196", 98304, 1},
+	}},
 }
 
 // catalogBuses is the PCI bus order Fill picks from when a GPU has no bus id and its node is not a default node.
 var catalogBuses = []string{"18", "2a", "3a", "5d", "9a", "ab", "ba", "db", "1b", "43", "4e", "8a", "ca", "e1", "f1", "f2"}
 
-// DefaultCatalog builds the catalog from the default topology's models, profiles and flavors.
+// DefaultCatalog builds the catalog from the default topology's models, profiles and flavors,
+// followed by the catalog-only models.
 func DefaultCatalog() Catalog {
 	c := Catalog{
 		Flavors: defaultFlavors(),
@@ -122,6 +193,15 @@ func DefaultCatalog() Catalog {
 		})
 		return &c.GPUModels[len(c.GPUModels)-1]
 	}
+	addMIG := func(m *CatalogModel) {
+		for _, p := range catalogMIG[m.Name] {
+			m.MIGProfiles = append(m.MIGProfiles, CatalogMIG{
+				Name: p.name, Slices: p.slices, MemoryMiB: p.memMiB,
+				GPUInstanceIDs: append([]int(nil), p.giIDs...), VGPU: p.vgpu,
+				VGPUProfiles: append([]VGPUProfile{p.vgpu}, p.alt...), Flavor: p.flavor,
+			})
+		}
+	}
 	for _, n := range defaultNodes {
 		m := add(n.model)
 		switch n.mode {
@@ -130,13 +210,15 @@ func DefaultCatalog() Catalog {
 		case ModePassthrough:
 			m.PassthroughFlavor = n.flavor
 		case ModeMIG:
-			for _, p := range catalogMIG[n.model.name] {
-				m.MIGProfiles = append(m.MIGProfiles, CatalogMIG{
-					Name: p.name, Slices: p.slices, MemoryMiB: p.memMiB,
-					GPUInstanceIDs: append([]int(nil), p.giIDs...), VGPU: p.vgpu, Flavor: p.flavor,
-				})
-			}
+			addMIG(m)
 		}
+	}
+	for _, x := range catalogExtraModels {
+		m := add(x.model)
+		for _, p := range x.vgpu {
+			m.VGPUProfiles = append(m.VGPUProfiles, CatalogVGPU{VGPUProfile: p, Flavor: vgpuFlavorName(p.Name)})
+		}
+		addMIG(m)
 	}
 	for i := range c.GPUModels {
 		m := &c.GPUModels[i]
@@ -145,6 +227,7 @@ func DefaultCatalog() Catalog {
 		}
 		if len(m.MIGProfiles) > 0 {
 			m.Modes = append(m.Modes, ModeMIG)
+			m.MaxMIGSlices = MIGSlices(m.Name)
 		}
 		m.Modes = append(m.Modes, ModePassthrough)
 		if m.PassthroughFlavor == "" {
@@ -247,8 +330,9 @@ type filler struct {
 // so a topology that only has names becomes complete. Fields that already have a value are left alone.
 //
 // "Empty" is "" for strings, 0 for sizes and ids, nil for profiles, and a negative number for
-// MIG GPU instance ids (0 is a valid GI ID). A VM on a MIG node with a negative
-// mig_gpu_instance_id gets the first GPU instance no other VM on that GPU uses.
+// MIG GPU instance ids (0 is a valid GI ID). A GPU's mode is not filled: empty means the node's mode.
+// A VM on a MIG GPU with a negative mig_gpu_instance_id gets the first GPU instance no other VM
+// on that GPU uses.
 // GPU indexes are not filled: 0 is a valid index. A VM's gpu_index of 0 is taken as empty and set to
 // the index of the GPU it sits under.
 func Fill(t *Topology) {
@@ -372,7 +456,7 @@ func (f *filler) fillHypervisors() {
 		if h.LocalGB == 0 {
 			h.LocalGB = fillNodeLocalGB
 		}
-		if h.Mode == ModeVGPU || h.Mode == ModeMIG {
+		if slices.ContainsFunc(h.Modes(), func(m GPUMode) bool { return m == ModeVGPU || m == ModeMIG }) {
 			if h.DriverVersion == "" {
 				h.DriverVersion = hostDriver
 			}
@@ -445,7 +529,7 @@ func (f *filler) fillGPU(h *Hypervisor, g *GPU) {
 		g.VMs = []*VM{}
 	}
 
-	switch h.Mode {
+	switch h.GPUMode(g) {
 	case ModeVGPU:
 		if g.Profile == nil && m != nil && len(m.VGPUProfiles) > 0 {
 			p := m.VGPUProfiles[0].VGPUProfile
@@ -556,8 +640,9 @@ func (f *filler) fillVM(h *Hypervisor, g *GPU, k, seq int, vm *VM) {
 	if vm.Hypervisor == "" {
 		vm.Hypervisor = h.Hostname
 	}
+	mode := h.GPUMode(g)
 	if vm.Mode == "" {
-		vm.Mode = h.Mode
+		vm.Mode = mode
 	}
 	if vm.GPUIndex == 0 {
 		vm.GPUIndex = g.Index
@@ -581,11 +666,11 @@ func (f *filler) fillVM(h *Hypervisor, g *GPU, k, seq int, vm *VM) {
 	if vm.GuestBDF == "" {
 		vm.GuestBDF = vmGuestBDF
 	}
-	if h.Mode == ModePassthrough {
+	if mode == ModePassthrough {
 		if vm.GuestDriverVersion == "" {
 			vm.GuestDriverVersion = passthruGuest
 		}
-	} else if h.Mode == ModeVGPU || h.Mode == ModeMIG {
+	} else if mode == ModeVGPU || mode == ModeMIG {
 		if vm.VGPUUUID == "" && vm.Name != "" {
 			vm.VGPUUUID = StableUUID("mdev", vm.Name)
 		}
@@ -593,7 +678,7 @@ func (f *filler) fillVM(h *Hypervisor, g *GPU, k, seq int, vm *VM) {
 			vm.GuestDriverVersion = vgpuGuestDrv
 		}
 	}
-	if h.Mode == ModeMIG && vm.MIGGPUInstanceID < 0 {
+	if mode == ModeMIG && vm.MIGGPUInstanceID < 0 {
 		vm.MIGGPUInstanceID = freeInstance(g, vm)
 	}
 	if vm.FlavorID == "" {
@@ -646,7 +731,7 @@ func freeInstance(g *GPU, self *VM) int {
 func (f *filler) flavorFor(h *Hypervisor, g *GPU, vm *VM) *Flavor {
 	var name string
 	var derive func() *Flavor
-	switch h.Mode {
+	switch h.GPUMode(g) {
 	case ModeVGPU:
 		if g.Profile == nil || g.Profile.Name == "" {
 			return nil

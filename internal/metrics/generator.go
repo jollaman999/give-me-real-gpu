@@ -10,6 +10,7 @@ package metrics
 
 import (
 	"math/rand"
+	"slices"
 	"strconv"
 	"time"
 
@@ -47,6 +48,7 @@ type hostState struct {
 type gpuState struct {
 	g    *topology.GPU
 	host *hostState
+	mode topology.GPUMode // how this GPU is handed out (the node's mode unless the GPU sets its own)
 	spec gpuSpec
 	r    *rand.Rand
 	temp float64
@@ -89,12 +91,12 @@ func NewGenerator(t *topology.Topology, opt Options) *Generator {
 			h:       h,
 			r:       hr,
 			node:    newNodeState(hr, false, h.VCPUs, h.MemoryMB, h.LocalGB),
-			gpuType: hostGPUType(h.Mode),
+			gpuType: hostGPUType(h),
 		}
 		for _, gp := range h.GPUs {
 			gr := newRand(opt.Seed, "gpu/"+h.Hostname+"/"+gp.UUID)
 			sp := specFor(gp.ModelName)
-			gs := &gpuState{g: gp, host: hs, spec: sp, r: gr, temp: sp.idleTemp + gr.Float64()*4}
+			gs := &gpuState{g: gp, host: hs, mode: h.GPUMode(gp), spec: sp, r: gr, temp: sp.idleTemp + gr.Float64()*4}
 			for i, vm := range gp.VMs {
 				key := "vm/" + vm.ID
 				vr := newRand(opt.Seed, key)
@@ -114,7 +116,7 @@ func NewGenerator(t *topology.Topology, opt Options) *Generator {
 				if hashKey(key)%2 == 1 {
 					vs.timeDiff = -1
 				}
-				if h.Mode == topology.ModeMIG {
+				if gs.mode == topology.ModeMIG {
 					vs.mig = migInstance(gp, vm.MIGGPUInstanceID)
 				}
 				gs.vms = append(gs.vms, vs)
@@ -203,13 +205,14 @@ func (g *Generator) hostTags(hs *hostState) map[string]string {
 }
 
 // vmTags are the global tags of an agent inside a VM. VM agents also get project_id.
+// gpu_type is the mode of the GPU the VM is attached to.
 func (g *Generator) vmTags(vs *vmState) map[string]string {
 	return map[string]string{
 		"uuid":            g.vmUUID(vs.vm),
 		"credential_id":   g.opt.CredentialID,
 		"cloud_service":   "openstack",
 		"type":            "vm",
-		"gpu_type":        string(vs.host.h.Mode),
+		"gpu_type":        string(vs.gpu.mode),
 		"collection_type": "agent",
 		"host":            vs.vm.Name,
 		"project_id":      g.projectID,
@@ -230,10 +233,10 @@ func (g *Generator) emitHost(b *batch, hs *hostState, now time.Time, dt float64,
 		b.add("net", base, map[string]any{"ip": hs.h.HostIP, "server_time": st}, ts)
 	}
 
-	// Physical GPUs are read by nvidia-smi on VGPU and MIG hypervisors only.
-	// A passthrough hypervisor has its GPUs bound to vfio-pci, so it reports none.
-	if hs.h.Mode != topology.ModePassthrough {
-		for _, gs := range hs.gpus {
+	// Physical GPUs are read by nvidia-smi only when they are VGPU or MIG GPUs.
+	// A passthrough GPU is bound to vfio-pci, so the hypervisor does not report it.
+	for _, gs := range hs.gpus {
+		if gs.mode != topology.ModePassthrough {
 			g.emitPhysical(b, hs, gs, ts, st)
 		}
 	}
@@ -251,7 +254,7 @@ func (g *Generator) emitVM(b *batch, vs *vmState, now time.Time, dt float64, due
 
 	vs.node.emit(b, base, ts, st, dt, vs.util, due60)
 
-	switch vs.host.h.Mode {
+	switch vs.gpu.mode {
 	case topology.ModePassthrough:
 		g.emitPassthroughGuest(b, vs, base, ts)
 	default:
@@ -266,17 +269,19 @@ func (g *Generator) emitVM(b *batch, vs *vmState, now time.Time, dt float64, due
 }
 
 // hostGPUType is the gpu_type global tag the monitoring server writes into a hypervisor
-// agent config. It is detected from `nvidia-smi -q -x` on the node:
-//   - a vGPU host driver reports virtualization_mode "Host VGPU", which is neither
+// agent config. It is detected from `nvidia-smi -q -x` on the node, for the whole node:
+//   - MIG mode enabled on any GPU gives MIG;
+//   - otherwise a vGPU host driver reports virtualization_mode "Host VGPU", which is neither
 //     "VGPU" nor "Pass-Through", so the detector falls back to BARE_METAL;
-//   - MIG mode enabled gives MIG;
-//   - a passthrough host has no nvidia driver, the output is empty, which gives NONE.
-func hostGPUType(m topology.GPUMode) string {
-	switch m {
-	case topology.ModeVGPU:
-		return "BARE_METAL"
-	case topology.ModeMIG:
+//   - passthrough GPUs are bound to vfio-pci and do not show up, so a node with only
+//     passthrough GPUs has empty output, which gives NONE.
+func hostGPUType(h *topology.Hypervisor) string {
+	modes := h.Modes()
+	switch {
+	case slices.Contains(modes, topology.ModeMIG):
 		return "MIG"
+	case slices.Contains(modes, topology.ModeVGPU):
+		return "BARE_METAL"
 	default:
 		return "NONE"
 	}

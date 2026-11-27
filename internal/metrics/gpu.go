@@ -9,9 +9,6 @@ import (
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
 )
 
-// migSlices is the number of compute slices of a MIG capable GPU (A100, H100).
-const migSlices = 7
-
 // gpuSpec holds the model dependent ranges used to make values plausible.
 type gpuSpec struct {
 	tdp      float64 // board power limit (W)
@@ -38,6 +35,8 @@ func specFor(model string) gpuSpec {
 		return gpuSpec{150, 36, 1695, 210, 6251, 405, false}
 	case strings.Contains(m, "L40"):
 		return gpuSpec{350, 35, 2520, 210, 9001, 405, false}
+	case strings.Contains(m, "RTX PRO 6000"):
+		return gpuSpec{600, 30, 2430, 180, 12481, 405, false}
 	}
 	return gpuSpec{300, 34, 1500, 300, 5000, 405, false}
 }
@@ -48,7 +47,7 @@ func specFor(model string) gpuSpec {
 //   - MIG instances are independent; the device util is the slice weighted mean.
 //   - passthrough: the single VM owns the GPU.
 func (gs *gpuState) step() {
-	mode := gs.host.h.Mode
+	mode := gs.mode
 	gs.util = 0
 	gs.fbUsed = 0
 	switch mode {
@@ -80,7 +79,7 @@ func (gs *gpuState) step() {
 			weighted += vs.util * float64(slices)
 			gs.fbUsed += float64(mem)
 		}
-		gs.util = clamp(weighted/migSlices, 0, 100)
+		gs.util = clamp(weighted/float64(topology.MIGSlices(gs.g.ModelName)), 0, 100)
 		gs.fbUsed = clamp(gs.fbUsed, 0, float64(gs.g.MemoryMiB))
 	case topology.ModePassthrough:
 		if len(gs.vms) > 0 {
@@ -96,7 +95,7 @@ func (gs *gpuState) step() {
 
 // pstate is the performance state number. A MIG enabled GPU stays at P0.
 func (gs *gpuState) pstate() int {
-	if gs.host.h.Mode == topology.ModeMIG || gs.util >= 3 {
+	if gs.mode == topology.ModeMIG || gs.util >= 3 {
 		return 0
 	}
 	return 8
@@ -184,12 +183,12 @@ func physTags(base map[string]string, gs *gpuState, index int, busID, driver, cu
 	)
 }
 
-// emitPhysical writes the physical GPU point of a VGPU or MIG hypervisor, and on MIG
-// hypervisors the GPM points (device and per instance) that gpm_to_vm moves onto
+// emitPhysical writes the physical GPU point of a VGPU or MIG GPU, and for a MIG GPU
+// the GPM points (device and per instance) that gpm_to_vm moves onto
 // the physical and VM series.
 func (g *Generator) emitPhysical(b *batch, hs *hostState, gs *gpuState, ts, st int64) {
 	base := g.hostTags(hs)
-	mig := hs.h.Mode == topology.ModeMIG
+	mig := gs.mode == topology.ModeMIG
 	// The vGPU host driver reports no CUDA version ("Not Found"), so no CUDA tag here.
 	tags := physTags(base, gs, gs.g.Index, gs.g.BusID, hs.h.DriverVersion, "")
 	b.add("dcgm", tags, gs.physFields(!mig), ts)
@@ -232,7 +231,7 @@ func (g *Generator) vmExecTags(vs *vmState) map[string]string {
 	gp := vs.gpu.g
 	gpuType := "VGPU"
 	gi := "N/A"
-	if vs.host.h.Mode == topology.ModeMIG {
+	if vs.gpu.mode == topology.ModeMIG {
 		gpuType = "MIG"
 		if vs.vm.MIGGPUInstanceID >= 0 {
 			gi = strconv.Itoa(vs.vm.MIGGPUInstanceID)
@@ -263,8 +262,8 @@ func (g *Generator) vmExecTags(vs *vmState) map[string]string {
 	}
 }
 
-// vgpuProfile returns the vGPU type of the VM: the GPU profile on VGPU nodes and the
-// MIG backed vGPU type of the instance on MIG nodes. nil if unknown.
+// vgpuProfile returns the vGPU type of the VM: the GPU profile on a VGPU GPU and the
+// MIG backed vGPU type of the instance on a MIG GPU. nil if unknown.
 func vgpuProfile(vs *vmState) *topology.VGPUProfile {
 	if vs.mig != nil {
 		return vs.mig.VGPU
@@ -296,16 +295,16 @@ func vgpuFramebuffer(vs *vmState) int {
 // emitMapping writes what gpu_vm_mapping.sh prints on one hypervisor, in its order:
 // per vGPU instance a gpu_vm_mapping point followed by a dcgm point for the VM, then
 // passthrough GPUs found in libvirt hostdevs, then every GPU that was not assigned.
+// The script judges each GPU on its own, so gpu_type is the mode of that GPU.
 // A MIG GPU with at least one assigned instance is "assigned" as a whole, so its
 // unused instances produce no row.
 func (g *Generator) emitMapping(b *batch, hs *hostState, ts, st int64) {
 	base := g.hostTags(hs)
-	mode := hs.h.Mode
-	scriptType := strings.ToLower(string(mode))
+	scriptType := func(gs *gpuState) string { return strings.ToLower(string(gs.mode)) }
 	assigned := map[int]bool{}
 
-	if mode == topology.ModeVGPU || mode == topology.ModeMIG {
-		for _, gs := range hs.gpus {
+	for _, gs := range hs.gpus {
+		if gs.mode == topology.ModeVGPU || gs.mode == topology.ModeMIG {
 			for _, vs := range gs.vms {
 				assigned[gs.g.Index] = true
 				p := vgpuProfile(vs)
@@ -325,7 +324,7 @@ func (g *Generator) emitMapping(b *batch, hs *hostState, ts, st int64) {
 					"device_id", orDefault(gs.g.DeviceID, "0000"),
 					"status", "assigned",
 					"driver", "nvidia",
-					"gpu_type", scriptType,
+					"gpu_type", scriptType(gs),
 					"vgpu_uuid", vs.vm.VGPUUUID,
 				)
 				b.add("gpu_vm_mapping", tags, map[string]any{
@@ -343,8 +342,8 @@ func (g *Generator) emitMapping(b *batch, hs *hostState, ts, st int64) {
 		}
 	}
 
-	if mode == topology.ModePassthrough {
-		for _, gs := range hs.gpus {
+	for _, gs := range hs.gpus {
+		if gs.mode == topology.ModePassthrough {
 			if len(gs.vms) == 0 {
 				continue
 			}
@@ -373,7 +372,7 @@ func (g *Generator) emitMapping(b *batch, hs *hostState, ts, st int64) {
 		}
 		driver := "nvidia"
 		f := map[string]any{"mapped": int64(0), "vgpu_active_instances": int64(0), "server_time": st}
-		if mode == topology.ModePassthrough {
+		if gs.mode == topology.ModePassthrough {
 			driver = "vfio-pci"
 		} else {
 			f["gpu_uuid"] = gs.g.UUID
@@ -387,7 +386,7 @@ func (g *Generator) emitMapping(b *batch, hs *hostState, ts, st int64) {
 			"device_id", gs.g.DeviceID,
 			"status", "unassigned",
 			"driver", driver,
-			"gpu_type", scriptType,
+			"gpu_type", scriptType(gs),
 		)
 		b.add("gpu_vm_mapping", tags, f, ts)
 	}
@@ -406,7 +405,7 @@ func (g *Generator) vmExecFields(vs *vmState, fbTotal int, st int64) map[string]
 		"pstate":              int64(vs.gpu.pstate()),
 		"server_time":         st,
 	}
-	if vs.host.h.Mode == topology.ModeMIG {
+	if vs.gpu.mode == topology.ModeMIG {
 		f["mig_mode"] = 1.0
 		return f
 	}
@@ -479,7 +478,7 @@ func (g *Generator) emitXID(b *batch, vs *vmState, now time.Time) {
 
 	var uuid, bus, driver string
 	ts := now
-	if vs.host.h.Mode == topology.ModePassthrough {
+	if vs.gpu.mode == topology.ModePassthrough {
 		uuid, bus, driver = g.vmUUID(vs.vm), guestBusID(vs.vm), vs.vm.GuestDriverVersion
 		ts = now.Add(time.Duration(vs.timeDiff) * time.Second)
 	} else {
