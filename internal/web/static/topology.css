@@ -239,16 +239,26 @@
 .tp-problems p { margin: 0 0 0.4rem; }
 .tp-drop-ok { outline: 2px solid var(--ok); outline-offset: 1px; background: var(--ok-bg); }
 .tp-drop-no { outline: 2px solid var(--danger); outline-offset: 1px; background: var(--danger-bg); cursor: no-drop; }
+/* Above the touch drag ghost (.tp-ghost), and placed below the pointer while the ghost sits above it. */
 .tp-drag-hint {
   position: fixed;
-  z-index: 50;
+  z-index: 70;
   pointer-events: none;
   background: var(--danger);
   color: var(--text-on-accent);
-  font-size: 12px;
-  padding: 0.2rem 0.6rem;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  padding: 0.45rem 0.75rem;
   border-radius: var(--radius-control);
-  max-width: 260px;
+  box-shadow: 0 4px 14px var(--shadow);
+  max-width: 320px;
+}
+.tp-drag-hint::before { content: "\26D4\00A0"; }
+/* The transition is only on the way out, so a new drag shows the hint at full opacity at once. */
+.tp-drag-hint.tp-hint-out { opacity: 0; transition: opacity 300ms ease; }
+@media (prefers-reduced-motion: reduce) {
+  .tp-drag-hint.tp-hint-out { transition: none; }
 }
 .tp-ghost {
   position: fixed;

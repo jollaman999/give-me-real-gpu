@@ -1043,29 +1043,83 @@
     changed();
   }
 
+  // The refusal hint stays this long after a release on a refused target, then fades out (.tp-hint-out in topology.css).
+  var HINT_LINGER_MS = 2500, HINT_FADE_MS = 300, HINT_GAP = 8;
+  // hintTimer runs while the hint lingers after a release; leaveTimer hides the hint a moment after a dragleave
+  // with no related target, unless dragend comes first: browsers send that dragleave on a refused release too.
+  var hintTimer = 0, leaveTimer = 0;
+
+  function hintReset() {
+    clearTimeout(hintTimer);
+    clearTimeout(leaveTimer);
+    hintTimer = leaveTimer = 0;
+    S.els.hint.classList.remove("tp-hint-out");
+  }
+
+  function hideHint() {
+    hintReset();
+    S.els.hint.hidden = true;
+  }
+
+  function lingerHint() {
+    hintReset();
+    hintTimer = setTimeout(function () {
+      S.els.hint.classList.add("tp-hint-out");
+      hintTimer = setTimeout(hideHint, HINT_FADE_MS);
+    }, HINT_LINGER_MS);
+  }
+
+  // placeHint puts the hint below the pointer, clear of the drag ghost above it, and keeps it in the viewport: left of
+  // the pointer past the right edge, above the ghost past the bottom edge.
+  function placeHint(hint, x, y) {
+    // Measure at the corner, where the width is not squeezed by the right edge of the last position.
+    hint.style.left = "0px";
+    hint.style.top = "0px";
+    var w = hint.offsetWidth, h = hint.offsetHeight;
+    var vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+    var left = x + 16, top = y + 24;
+    if (left + w > vw - HINT_GAP) left = x - 16 - w;
+    if (top + h > vh - HINT_GAP) {
+      var ghost = S.pdrag && S.pdrag.ghost;
+      // The ghost spans from 120% to 20% of its height above the pointer (transform in .tp-ghost).
+      var above = ghost ? Math.ceil(ghost.offsetHeight * 1.2) : 16;
+      top = y - above - HINT_GAP - h;
+    }
+    hint.style.left = Math.max(HINT_GAP, left) + "px";
+    hint.style.top = Math.max(HINT_GAP, top) + "px";
+  }
+
   var hl = null;
   function highlight(t, verdict, x, y) {
     if (hl && hl !== t) hl.classList.remove("tp-drop-ok", "tp-drop-no");
     hl = t;
     var hint = S.els.hint;
     if (!t) {
-      hint.hidden = true;
+      hideHint();
       return;
     }
     t.classList.toggle("tp-drop-ok", verdict.ok);
     t.classList.toggle("tp-drop-no", !verdict.ok);
     if (!verdict.ok && verdict.reason !== "same") {
+      hintReset();
       hint.textContent = tr("r_" + verdict.reason, verdict.params);
-      hint.style.left = (x + 14) + "px";
-      hint.style.top = (y + 14) + "px";
       hint.hidden = false;
+      placeHint(hint, x, y);
     } else {
-      hint.hidden = true;
+      hideHint();
     }
   }
 
-  function endDrag() {
-    highlight(null);
+  // endDrag ends a drag. With linger set (a release, not a cancel) a refusal hint that is showing stays where it is
+  // for a while and fades out; a hint that already lingers keeps its timers.
+  function endDrag(linger) {
+    if (linger && !S.els.hint.hidden) {
+      if (hl) hl.classList.remove("tp-drop-ok", "tp-drop-no");
+      hl = null;
+      if (!hintTimer) lingerHint();
+    } else if (!hintTimer) {
+      highlight(null);
+    }
     S.drag = null;
     S.root.classList.remove("tp-dragging");
   }
@@ -1074,6 +1128,7 @@
     rootEl.addEventListener("dragstart", function (e) {
       var src = e.target.closest ? e.target.closest("[data-drag]") : null;
       if (!src || S.pdrag) { e.preventDefault(); return; }
+      hideHint();
       S.drag = payloadOf(src);
       e.dataTransfer.effectAllowed = "copyMove";
       e.dataTransfer.setData("text/plain", src.textContent || S.drag.kind);
@@ -1091,7 +1146,14 @@
       }
     });
     rootEl.addEventListener("dragleave", function (e) {
-      if (S.drag && (!e.relatedTarget || !rootEl.contains(e.relatedTarget))) highlight(null);
+      if (!S.drag) return;
+      if (!e.relatedTarget) {
+        // Leaving the window, or a release or cancel that dragend follows at once.
+        clearTimeout(leaveTimer);
+        leaveTimer = setTimeout(function () { leaveTimer = 0; highlight(null); }, 100);
+      } else if (!rootEl.contains(e.relatedTarget)) {
+        highlight(null);
+      }
     });
     rootEl.addEventListener("drop", function (e) {
       if (!S.drag) return;
@@ -1099,10 +1161,10 @@
       var p = S.drag;
       var t = dropTarget(e.target, p);
       var v = t ? evaluate(t, p) : null;
-      endDrag();
+      endDrag(true);
       if (v && v.ok) perform(t, p, v);
     });
-    rootEl.addEventListener("dragend", endDrag);
+    rootEl.addEventListener("dragend", function () { endDrag(true); });
 
     // Touch and pen: native drag and drop is missing or needs a long press there, so follow the pointer instead.
     rootEl.addEventListener("pointerdown", function (e) {
@@ -1118,6 +1180,7 @@
         if (Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) < 8) return;
         d.ghost = el("div", "tp-ghost", d.src.textContent);
         document.body.appendChild(d.ghost);
+        hideHint();
         S.drag = d.p;
         rootEl.classList.add("tp-dragging");
       }
@@ -1135,7 +1198,7 @@
       d.ghost.remove();
       var t = drop ? dropTarget(document.elementFromPoint(e.clientX, e.clientY), d.p) : null;
       var v = t ? evaluate(t, d.p) : null;
-      endDrag();
+      endDrag(drop);
       if (v && v.ok) perform(t, d.p, v);
     };
     window.addEventListener("pointerup", function (e) { finish(e, true); });
