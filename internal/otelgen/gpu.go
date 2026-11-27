@@ -38,6 +38,8 @@ func specFor(model, arch string) gpuSpec {
 		s = gpuSpec{tdp: 400, idleTemp: 32, smBoost: 1410, smIdle: 1410, memBusy: 1593, memIdle: 1593, hbm: true}
 	case strings.Contains(m, "H100"), strings.Contains(m, "H200"):
 		s = gpuSpec{tdp: 700, idleTemp: 31, smBoost: 1980, smIdle: 1980, memBusy: 2619, memIdle: 2619, hbm: true}
+	case strings.Contains(m, "B200"): // estimated from the public board specification, not measured
+		s = gpuSpec{tdp: 1000, idleTemp: 30, smBoost: 1965, smIdle: 1965, memBusy: 3996, memIdle: 3996, hbm: true}
 	case strings.Contains(m, "A10"):
 		s = gpuSpec{tdp: 150, idleTemp: 36, smBoost: 1695, smIdle: 210, memBusy: 6251, memIdle: 405}
 	case strings.Contains(m, "L40"):

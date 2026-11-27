@@ -44,7 +44,8 @@ type CatalogVGPU struct {
 // CatalogMIG is a MIG GPU instance kind and the flavor name VMs on it get.
 // GPUInstanceIDs is the order in which Fill hands out GI IDs for this kind.
 // VGPUProfiles are the MIG-backed vGPU types an instance of this kind can carry, the first one being
-// the default; VGPU is that first one.
+// the default; VGPU is that first one. MaxPerGPU is the most instances of this kind one GPU holds,
+// 0 when only the slice total limits it.
 type CatalogMIG struct {
 	Name           string        `json:"name"`
 	Slices         int           `json:"slices"`
@@ -53,6 +54,7 @@ type CatalogMIG struct {
 	VGPU           VGPUProfile   `json:"vgpu_profile"`
 	VGPUProfiles   []VGPUProfile `json:"vgpu_profiles"`
 	Flavor         string        `json:"flavor"`
+	MaxPerGPU      int           `json:"max_per_gpu,omitempty"`
 }
 
 // CatalogDefaults are the values Fill writes into empty fields.
@@ -88,6 +90,7 @@ var catalogMIG = map[string][]migProfile{
 	modelA100SXM80.name:    {migA100_1g, migA100_2g, migA100_3g, migA100_7g},
 	modelH100HBM3.name:     {migH100_1g, migH100_3g},
 	modelRTXPro6000BW.name: {migRTXPro6000_1g, migRTXPro6000_2g, migRTXPro6000_4g},
+	modelB200.name:         {migB200_1g, migB200_1gME, migB200_1g45, migB200_2g, migB200_3g, migB200_4g, migB200_7g},
 }
 
 // catalogMIGSlices is the number of compute slices per MIG capable model.
@@ -95,6 +98,18 @@ var catalogMIGSlices = map[string]int{
 	modelA100SXM80.name:    7,
 	modelH100HBM3.name:     7,
 	modelRTXPro6000BW.name: 4,
+	modelB200.name:         7,
+}
+
+// MIGMaxPerGPU is the most instances of the MIG kind profile one GPU of the model holds,
+// 0 when the catalog sets no such limit or does not know the model or the kind.
+func MIGMaxPerGPU(model, profile string) int {
+	for _, p := range catalogMIG[model] {
+		if p.name == profile {
+			return p.maxPerGPU
+		}
+	}
+	return 0
 }
 
 // MIGSlices is the number of compute slices one GPU of the model has in MIG mode,
@@ -131,7 +146,7 @@ var (
 			{"NVIDIA RTX Pro 6000 Blackwell DC-1-24C", "nvidia-1197", 24576, 4, 0},
 			{"NVIDIA RTX Pro 6000 Blackwell DC-1-12C", "nvidia-1206", 12288, 8, 2},
 			{"NVIDIA RTX Pro 6000 Blackwell DC-1-8C", "nvidia-1207", 8192, 12, 3},
-		}}
+		}, 4}
 	migRTXPro6000_2g = migProfile{"2g.48gb", 2, 47744, []int{1, 2},
 		VGPUProfile{"NVIDIA RTX Pro 6000 Blackwell DC-2-48Q", "nvidia-1188", 49152, 2, 0}, migFlavorName("2g.48gb"),
 		[]VGPUProfile{
@@ -139,7 +154,7 @@ var (
 			{"NVIDIA RTX Pro 6000 Blackwell DC-2-24C", "nvidia-1203", 24576, 4, 2},
 			{"NVIDIA RTX Pro 6000 Blackwell DC-2-16C", "nvidia-1204", 16384, 6, 3},
 			{"NVIDIA RTX Pro 6000 Blackwell DC-2-12C", "nvidia-1205", 12288, 8, 4},
-		}}
+		}, 2}
 	migRTXPro6000_4g = migProfile{"4g.96gb", 4, 95616, []int{0},
 		VGPUProfile{"NVIDIA RTX Pro 6000 Blackwell DC-4-96Q", "nvidia-1189", 98304, 1, 0}, migFlavorName("4g.96gb"),
 		[]VGPUProfile{
@@ -147,7 +162,32 @@ var (
 			{"NVIDIA RTX Pro 6000 Blackwell DC-4-48C", "nvidia-1200", 49152, 2, 2},
 			{"NVIDIA RTX Pro 6000 Blackwell DC-4-32C", "nvidia-1201", 32768, 3, 3},
 			{"NVIDIA RTX Pro 6000 Blackwell DC-4-24C", "nvidia-1202", 24576, 4, 4},
-		}}
+		}, 1}
+)
+
+// NVIDIA HGX B200 180GB. The vGPU and MIG-backed vGPU types, their framebuffer and maximum counts follow the
+// NVIDIA AI Enterprise vGPU type table for this board. The device id, the memory size and the vGPU name form
+// ("NVIDIA B200X-180C") are estimated and the VBIOS is made up: none of them come from a real node.
+var modelB200 = gpuModel{"NVIDIA B200", "2901", 184320, vbios("97", "00", "B8", "00", "01"), "Blackwell"}
+
+// MIG kinds of the B200 (7 slices). Each carries one C (compute) MIG-backed vGPU type that uses the whole
+// instance. The instance memory and the GI ID order are estimated with the same layout as the A100;
+// the type numbers (nvidia-1211 on) are not measured.
+var (
+	migB200_1g = migProfile{"1g.23gb", 1, 23040, []int{7, 8, 9, 10, 11, 12, 13},
+		VGPUProfile{"NVIDIA B200X-1-23C", "nvidia-1211", 23040, 7, 0}, migFlavorName("1g.23gb"), nil, 7}
+	migB200_1gME = migProfile{"1g.23gb+me", 1, 23040, []int{7},
+		VGPUProfile{"NVIDIA B200X-1-23CME", "nvidia-1212", 23040, 1, 0}, migFlavorName("1g.23gb+me"), nil, 1}
+	migB200_1g45 = migProfile{"1g.45gb", 1, 46080, []int{7, 8, 9, 10},
+		VGPUProfile{"NVIDIA B200X-1-45C", "nvidia-1213", 46080, 4, 0}, migFlavorName("1g.45gb"), nil, 4}
+	migB200_2g = migProfile{"2g.45gb", 2, 46080, []int{3, 4, 5},
+		VGPUProfile{"NVIDIA B200X-2-45C", "nvidia-1214", 46080, 3, 0}, migFlavorName("2g.45gb"), nil, 3}
+	migB200_3g = migProfile{"3g.90gb", 3, 92160, []int{1, 2},
+		VGPUProfile{"NVIDIA B200X-3-90C", "nvidia-1215", 92160, 2, 0}, migFlavorName("3g.90gb"), nil, 2}
+	migB200_4g = migProfile{"4g.90gb", 4, 92160, []int{1},
+		VGPUProfile{"NVIDIA B200X-4-90C", "nvidia-1216", 92160, 1, 0}, migFlavorName("4g.90gb"), nil, 1}
+	migB200_7g = migProfile{"7g.180gb", 7, 184320, []int{0},
+		VGPUProfile{"NVIDIA B200X-7-180C", "nvidia-1217", 184320, 1, 0}, migFlavorName("7g.180gb"), nil, 1}
 )
 
 // catalogExtraModels are added after the default topology's models.
@@ -167,6 +207,9 @@ var catalogExtraModels = []catalogModel{
 		{"NVIDIA RTX Pro 6000 Blackwell DC-32C", "nvidia-1194", 32768, 3, 0},
 		{"NVIDIA RTX Pro 6000 Blackwell DC-48C", "nvidia-1195", 49152, 2, 0},
 		{"NVIDIA RTX Pro 6000 Blackwell DC-96C", "nvidia-1196", 98304, 1, 0},
+	}},
+	{model: modelB200, vgpu: []VGPUProfile{
+		{"NVIDIA B200X-180C", "nvidia-1210", 184320, 1, 0},
 	}},
 }
 
@@ -215,7 +258,7 @@ func DefaultCatalog() Catalog {
 			m.MIGProfiles = append(m.MIGProfiles, CatalogMIG{
 				Name: p.name, Slices: p.slices, MemoryMiB: p.memMiB,
 				GPUInstanceIDs: append([]int(nil), p.giIDs...), VGPU: p.vgpu,
-				VGPUProfiles: append([]VGPUProfile{p.vgpu}, p.alt...), Flavor: p.flavor,
+				VGPUProfiles: append([]VGPUProfile{p.vgpu}, p.alt...), Flavor: p.flavor, MaxPerGPU: p.maxPerGPU,
 			})
 		}
 	}

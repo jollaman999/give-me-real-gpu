@@ -31,6 +31,8 @@ func specFor(model string) gpuSpec {
 		return gpuSpec{400, 32, 1410, 1410, 1593, 1593, true}
 	case strings.Contains(m, "H100"), strings.Contains(m, "H200"):
 		return gpuSpec{700, 31, 1980, 1980, 2619, 2619, true}
+	case strings.Contains(m, "B200"): // estimated from the public board specification, not measured
+		return gpuSpec{1000, 30, 1965, 1965, 3996, 3996, true}
 	case strings.Contains(m, "A10"):
 		return gpuSpec{150, 36, 1695, 210, 6251, 405, false}
 	case strings.Contains(m, "L40"):

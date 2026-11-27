@@ -30,7 +30,7 @@ func TestCatalog(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil {
 		t.Fatal(err)
 	}
-	if len(c.GPUModels) != 7 || c.GPUModels[0].Name != "NVIDIA A10" || c.Defaults.MaxMIGSlices != 7 {
+	if len(c.GPUModels) != 8 || c.GPUModels[0].Name != "NVIDIA A10" || c.Defaults.MaxMIGSlices != 7 {
 		t.Fatalf("catalog %+v", c)
 	}
 	// The editor reads the slice count per model from max_mig_slices and the vGPU types per MIG kind from vgpu_profiles.

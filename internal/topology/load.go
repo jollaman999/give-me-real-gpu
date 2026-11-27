@@ -133,6 +133,8 @@ func (t *Topology) validateGPU(h *Hypervisor, g *GPU, where string,
 		}
 	case ModeMIG:
 		slices := 0
+		var kinds []string
+		perKind := map[string]int{}
 		for k, mi := range g.MIGInstances {
 			if mi == nil {
 				fail("%s: mig_instances[%d] is null", where, k)
@@ -143,9 +145,18 @@ func (t *Topology) validateGPU(h *Hypervisor, g *GPU, where string,
 			}
 			instances[mi.GPUInstanceID] = mi
 			slices += mi.Slices
+			if perKind[mi.Profile] == 0 {
+				kinds = append(kinds, mi.Profile)
+			}
+			perKind[mi.Profile]++
 		}
 		if n := MIGSlices(g.ModelName); slices > n {
 			fail("%s: MIG slice total %d exceeds %d", where, slices, n)
+		}
+		for _, p := range kinds {
+			if n := MIGMaxPerGPU(g.ModelName, p); n > 0 && perKind[p] > n {
+				fail("%s: %d %s instances, more than the %d one GPU allows", where, perKind[p], p, n)
+			}
 		}
 	case ModePassthrough:
 		if len(g.VMs) > 1 {

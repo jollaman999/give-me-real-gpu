@@ -163,7 +163,7 @@ func TestMixedNodeRejects(t *testing.T) {
 
 func TestBlackwellCatalog(t *testing.T) {
 	c := DefaultCatalog()
-	if len(c.GPUModels) != 7 || c.GPUModels[6].Name != modelRTXPro6000BW.name {
+	if len(c.GPUModels) != 8 || c.GPUModels[6].Name != modelRTXPro6000BW.name {
 		t.Fatalf("models %d, last %q", len(c.GPUModels), c.GPUModels[len(c.GPUModels)-1].Name)
 	}
 	bw := c.GPUModels[6]

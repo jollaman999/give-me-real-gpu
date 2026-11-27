@@ -83,29 +83,31 @@ var (
 // giIDs is the GI ID order nvidia-smi assigns when the GPU is filled with this kind (1g 7..13, 2g 3..5, 3g 1..2, 7g 0).
 // vgpu is the MIG-backed vGPU type attached to the instance by default, alt the other types the instance
 // can carry (see VGPUProfile.PerGPUInstance for the time-sliced ones). The type numbers (nvidia-NNN) are not measured.
+// maxPerGPU is the most instances of this kind one GPU holds, 0 when only the slice total limits it.
 type migProfile struct {
-	name   string
-	slices int
-	memMiB int
-	giIDs  []int
-	vgpu   VGPUProfile
-	flavor string
-	alt    []VGPUProfile
+	name      string
+	slices    int
+	memMiB    int
+	giIDs     []int
+	vgpu      VGPUProfile
+	flavor    string
+	alt       []VGPUProfile
+	maxPerGPU int
 }
 
 var (
 	migA100_1g = migProfile{"1g.10gb", 1, 9728, []int{7, 8, 9, 10, 11, 12, 13},
-		VGPUProfile{"NVIDIA A100D-1-10C", "nvidia-699", 10240, 7, 0}, "emu-mig-1g", nil}
+		VGPUProfile{"NVIDIA A100D-1-10C", "nvidia-699", 10240, 7, 0}, "emu-mig-1g", nil, 0}
 	migA100_2g = migProfile{"2g.20gb", 2, 19968, []int{3, 4, 5},
-		VGPUProfile{"NVIDIA A100D-2-20C", "nvidia-700", 20480, 3, 0}, "emu-mig-2g", nil}
+		VGPUProfile{"NVIDIA A100D-2-20C", "nvidia-700", 20480, 3, 0}, "emu-mig-2g", nil, 0}
 	migA100_3g = migProfile{"3g.40gb", 3, 40192, []int{1, 2},
-		VGPUProfile{"NVIDIA A100D-3-40C", "nvidia-701", 40960, 2, 0}, "emu-mig-3g", nil}
+		VGPUProfile{"NVIDIA A100D-3-40C", "nvidia-701", 40960, 2, 0}, "emu-mig-3g", nil, 0}
 	migA100_7g = migProfile{"7g.80gb", 7, 80896, []int{0},
-		VGPUProfile{"NVIDIA A100D-7-80C", "nvidia-702", 81920, 1, 0}, "emu-mig-7g", nil}
+		VGPUProfile{"NVIDIA A100D-7-80C", "nvidia-702", 81920, 1, 0}, "emu-mig-7g", nil, 0}
 	migH100_1g = migProfile{"1g.10gb", 1, 9984, []int{7, 8, 9, 10, 11, 12, 13},
-		VGPUProfile{"NVIDIA H100XM-1-10C", "nvidia-1074", 10240, 7, 0}, "emu-mig-1g", nil}
+		VGPUProfile{"NVIDIA H100XM-1-10C", "nvidia-1074", 10240, 7, 0}, "emu-mig-1g", nil, 0}
 	migH100_3g = migProfile{"3g.40gb", 3, 40448, []int{1, 2},
-		VGPUProfile{"NVIDIA H100XM-3-40C", "nvidia-1076", 40960, 2, 0}, "emu-mig-3g", nil}
+		VGPUProfile{"NVIDIA H100XM-3-40C", "nvidia-1076", 40960, 2, 0}, "emu-mig-3g", nil, 0}
 )
 
 // migPlan is the layout of one MIG GPU: create instances GPU instances and attach a VM to the first vms of them.

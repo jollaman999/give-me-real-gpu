@@ -20,6 +20,7 @@ func TestDefaultCatalog(t *testing.T) {
 		"NVIDIA L40S":           {ModePassthrough},
 		"NVIDIA A100-PCIE-40GB": {ModePassthrough},
 		"NVIDIA RTX PRO 6000 Blackwell Server Edition": {ModeVGPU, ModeMIG, ModePassthrough},
+		"NVIDIA B200": {ModeVGPU, ModeMIG, ModePassthrough},
 	}
 	if len(c.GPUModels) != len(want) {
 		t.Fatalf("got %d models, want %d", len(c.GPUModels), len(want))
