@@ -307,6 +307,7 @@ curl -s -X PUT http://localhost:15080/api/v1/settings \
 | `GET`, `PUT /api/v1/settings` | General settings. Keys left out of a `PUT` keep their value |
 | `GET`, `POST /api/v1/sinks`, `PUT`, `DELETE /api/v1/sinks/<id>` | Sinks. Keys left out of a `PUT` keep their value |
 | `tag_rules` in `POST /api/v1/sinks` and `PUT /api/v1/sinks/<id>` | The [tag and label rules](#tag-and-label-rules) of the sink. A `PUT` replaces the whole list; `[]` removes every rule, and leaving the key out (or `null`) keeps the saved rules |
+| `GET /api/v1/tag-keys` | The tag keys (`influxdb`) and label keys (`otlp`) the saved topology sends before any rule, with an example value each. See [Tag and label rules](#tag-and-label-rules) |
 | `GET`, `PUT /api/v1/topology`, `POST /api/v1/topology/reset` | The saved topology. `PUT` saves it as sent, without filling empty fields |
 | `POST /api/v1/topology/fill` | Fills the empty fields of the topology in the body and lists its problems. Saves nothing |
 | `GET /api/v1/topology/catalog` | GPU models, profiles and flavors the editor offers |
@@ -473,7 +474,8 @@ or of the attributes it sends (`otlp` sinks; the UI and the backend call them la
 - `influxdb` sinks: tags only. Measurement names, field names and field values stay as they are.
 - `otlp` sinks: `rename` and `drop` apply to data point attributes and resource attributes (such as `process.pid` on a process resource).
   `add` puts the key on every data point only, and on a resource only changes a key that is already there. Metric names stay as they are.
-- Rules change keys, not values: there is no rule that rewrites the value of an existing tag or attribute.
+- `rename` and `drop` never change a value. The only way to change the value of a key that is already sent is an `add` with
+  the same key, which replaces it with a fixed value.
 
 A save is rejected (400, like the other [Settings API](#settings-api) problems) unless:
 
@@ -483,7 +485,24 @@ A save is rejected (400, like the other [Settings API](#settings-api) problems) 
 - No key or value contains a line break.
 - A sink has at most 50 rules.
 
-In the settings UI, edit them in the sink dialog, under **Tag rules** for an `influxdb` sink or **Label rules** for an `otlp` sink. Through the API, send them with the sink:
+In the settings UI, edit them in the sink dialog, under **Tag rules** for an `influxdb` sink or **Label rules** for an `otlp` sink.
+The section has two parts:
+
+- **Add fixed tags** (**Add fixed labels**): one `key = value` per row. Each row is an `add` rule.
+- **Change tags already sent** (**Change labels already sent**): the keys the sink sends now, as chips with the most common
+  first. Hovering over a chip shows an example value and where the key is sent; clicking it adds a row that renames or
+  drops that key. The chips show what the rules do: a renamed key as `host → hostname`, a dropped key struck out, a key
+  whose value an `add` replaces as `key = value`, and a key that only an `add` brings as `+ key = value`.
+
+The UI saves the change rows first, in their order, and the fixed tags after them, so a fixed key=value is always in the
+output. A sink saved through the API with an `add` in the middle of the list is shown the same way and saved in that order
+the next time it is saved from the UI.
+
+The chips come from `GET /api/v1/tag-keys`, which runs one throwaway collection of the saved topology without any rule and
+returns, for each sink type, every key with an example value and the measurements (InfluxDB) or `resource`/`point` (OTLP)
+that carry it. `?credential_id=<id>` fills the `credential_id` tag and the `uuid` prefix of the examples.
+
+Through the API, send the rules with the sink:
 
 ```sh
 curl -s -X POST http://localhost:15080/api/v1/sinks \

@@ -418,6 +418,21 @@ console.log(JSON.stringify({
     null
   ]),
   noRules: h.tagRules(undefined),
+  ordered: h.orderRules([{action: "add", key: "c"}, {action: "drop", key: "a"}, null, {action: "add", key: "d"},
+    {action: "rename", key: "b"}]).map(function (r) { return r.action + ":" + r.key; }),
+  preview: h.tagPreview([
+    {key: "uuid", example: "u1", where: ["cpu"]},
+    {key: "hostname", example: "x", where: ["cpu"]},
+    {key: "env", example: "prod", where: ["cpu"]},
+    {key: "host", example: "h1", where: ["cpu", "dcgm"]}
+  ], [
+    {action: "add", key: "site", value: " a "},
+    {action: "rename", key: "host", new_key: "hostname"},
+    {action: "drop", key: "uuid"},
+    {action: "add", key: "env", value: "dev"},
+    {action: "add", key: "site", value: "b"},
+    {action: "drop", key: "host"}
+  ]),
   problems: [
     {action: "rename", key: "host", new_key: "hostname"},
     {action: "rename", key: "host", new_key: ""},
@@ -497,10 +512,20 @@ console.log(JSON.stringify({
 		"rules": []any{
 			map[string]any{"action": "rename", "key": "host", "new_key": "hostname"},
 			map[string]any{"action": "drop", "key": "time_diff"},
-			map[string]any{"action": "add", "key": "env", "value": "dev"},
 			map[string]any{"action": "rename", "key": "", "new_key": "only_new"},
+			map[string]any{"action": "add", "key": "env", "value": "dev"},
 		},
 		"noRules": []any{},
+		"ordered": []any{"drop:a", "rename:b", "add:c", "add:d"},
+		"preview": map[string]any{
+			"keys": []any{
+				map[string]any{"key": "host", "example": "h1", "where": []any{"cpu", "dcgm"}, "to": "hostname", "dropped": false, "value": ""},
+				map[string]any{"key": "env", "example": "prod", "where": []any{"cpu"}, "to": "", "dropped": false, "value": "dev"},
+				map[string]any{"key": "hostname", "example": "x", "where": []any{"cpu"}, "to": "", "dropped": true, "value": ""},
+				map[string]any{"key": "uuid", "example": "u1", "where": []any{"cpu"}, "to": "", "dropped": true, "value": ""},
+			},
+			"added": []any{map[string]any{"key": "site", "value": "b"}},
+		},
 		"problems": []any{
 			"", "sinks.rule_new_key_missing", "sinks.rule_same_key", "sinks.rule_key_missing",
 			"", "", "sinks.rule_value_missing", "sinks.rule_key_missing", "",

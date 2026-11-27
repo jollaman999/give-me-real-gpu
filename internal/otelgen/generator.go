@@ -14,6 +14,7 @@
 package otelgen
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/jollaman999/give-me-real-gpu/internal/otlp"
@@ -152,6 +153,36 @@ func (g *Generator) Collect(now time.Time) *otlp.ExportRequest {
 	}
 	tagrules.ApplyRequest(g.opt.TagRules, req)
 	return req
+}
+
+// LabelKeys returns the attribute keys one first collection of t emits, before any label rule, with an example
+// value and whether each key is on a "resource", a data "point" or both. XID events are forced on so their
+// attributes are listed too. Integer attributes are listed with their decimal value.
+func LabelKeys(t *topology.Topology, now time.Time) []tagrules.KeyInfo {
+	req := NewGenerator(t, Options{Seed: 1, XIDRate: 1}).Collect(now)
+	keys := &tagrules.KeySet{}
+	add := func(where string, kv otlp.KeyValue) {
+		v := kv.Str
+		if kv.IsInt {
+			v = strconv.FormatInt(kv.Int, 10)
+		}
+		keys.Add(where, kv.Key, v)
+	}
+	for _, rm := range req.ResourceMetrics {
+		for _, kv := range rm.Resource {
+			add("resource", kv)
+		}
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				for _, p := range m.Points {
+					for _, kv := range p.Attributes {
+						add("point", kv)
+					}
+				}
+			}
+		}
+	}
+	return keys.List()
 }
 
 // collect builds the resources of one agent: the host resource (hostmetrics

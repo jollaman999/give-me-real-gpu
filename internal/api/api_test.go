@@ -455,3 +455,45 @@ func TestErrorHandler(t *testing.T) {
 		t.Errorf("HEAD: %d %q", rec.Code, rec.Body.String())
 	}
 }
+
+func TestTagKeys(t *testing.T) {
+	e, _ := newServer(t, nil)
+
+	code, body := do(t, e, http.MethodGet, "/api/v1/tag-keys?credential_id="+credID, "")
+	if code != http.StatusOK {
+		t.Fatalf("GET tag-keys %d %s", code, body)
+	}
+	var out struct {
+		InfluxDB []tagrules.KeyInfo `json:"influxdb"`
+		OTLP     []tagrules.KeyInfo `json:"otlp"`
+	}
+	decodeJSON(t, body, &out)
+	find := func(list []tagrules.KeyInfo, key string) *tagrules.KeyInfo {
+		for i := range list {
+			if list[i].Key == key {
+				return &list[i]
+			}
+		}
+		return nil
+	}
+	if k := find(out.InfluxDB, "credential_id"); k == nil || k.Example != credID {
+		t.Errorf("influxdb credential_id = %+v, want example %q", k, credID)
+	}
+	if k := find(out.InfluxDB, "host"); k == nil || len(k.Where) == 0 || k.Example == "" {
+		t.Errorf("influxdb host = %+v, want an example and measurements", k)
+	}
+	if k := find(out.OTLP, "entity_id"); k == nil || k.Example == "" {
+		t.Errorf("otlp entity_id = %+v, want an example", k)
+	}
+	for i := 1; i < len(out.InfluxDB); i++ {
+		if out.InfluxDB[i-1].Key >= out.InfluxDB[i].Key {
+			t.Errorf("influxdb keys not sorted at %d: %q, %q", i, out.InfluxDB[i-1].Key, out.InfluxDB[i].Key)
+		}
+	}
+
+	_, body = do(t, e, http.MethodGet, "/api/v1/tag-keys", "")
+	decodeJSON(t, body, &out)
+	if k := find(out.InfluxDB, "credential_id"); k == nil || k.Example != exampleCredentialID {
+		t.Errorf("credential_id without a query = %+v, want example %q", k, exampleCredentialID)
+	}
+}

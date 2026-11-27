@@ -46,7 +46,7 @@
     return type === "influxdb" ? "influxdb-" + influxVersion(version) : String(type || "");
   }
 
-  var RULE_ACTIONS = ["rename", "drop", "add"];
+  var CHANGE_ACTIONS = ["rename", "drop"];
   var MAX_TAG_RULES = 50;
 
   function ruleText(v) {
@@ -61,12 +61,24 @@
     return true;
   }
 
-  // tagRules turns rule rows into the tag_rules list of the sink body. Blank rows are left out
-  // and each rule only carries the fields its action uses.
+  // orderRules puts the rows that change existing keys (rename, drop) first, in their order, and the
+  // rows that add a fixed key=value after them. The screen edits the two groups apart and saves them in this order.
+  function orderRules(rows) {
+    var changes = [];
+    var adds = [];
+    (rows || []).forEach(function (r) {
+      if (!r) return;
+      (r.action === "add" ? adds : changes).push(r);
+    });
+    return changes.concat(adds);
+  }
+
+  // tagRules turns rule rows into the tag_rules list of the sink body: changes first, then adds, so a fixed
+  // key=value is always in the output. Blank rows are left out and each rule only carries the fields its action uses.
   function tagRules(rows) {
     var out = [];
-    (rows || []).forEach(function (r) {
-      if (!r || tagRuleBlank(r)) return;
+    orderRules(rows).forEach(function (r) {
+      if (tagRuleBlank(r)) return;
       var action = ruleText(r.action);
       var rule = { action: action, key: ruleText(r.key) };
       if (action === "rename") rule.new_key = ruleText(r.new_key);
@@ -74,6 +86,48 @@
       out.push(rule);
     });
     return out;
+  }
+
+  // tagPreview shows what the rules do to the keys a sink sends (GET /api/v1/tag-keys). Each key gets
+  // to (its new name, "" when unchanged), dropped and value (a fixed value set by an add rule, "" when none).
+  // Keys carried by more measurements come first. added lists the add rules whose key is not sent otherwise.
+  function tagPreview(keys, rows) {
+    var items = (keys || []).map(function (k) {
+      return { key: k.key, example: k.example || "", where: k.where || [], cur: k.key, to: "", dropped: false, value: "" };
+    });
+    var added = [];
+    function current(name) {
+      for (var i = 0; i < items.length; i++) if (items[i].cur === name) return items[i];
+      return null;
+    }
+    tagRules(rows).forEach(function (r) {
+      var it = current(r.key);
+      if (r.action === "rename") {
+        if (!it) return;
+        var clash = current(r.new_key);
+        if (clash) {
+          clash.cur = null;
+          clash.dropped = true;
+        }
+        it.cur = r.new_key;
+        it.to = it.cur === it.key ? "" : it.cur;
+      } else if (r.action === "drop") {
+        if (it) {
+          it.cur = null;
+          it.dropped = true;
+        }
+      } else if (it) {
+        it.value = r.value;
+      } else {
+        added = added.filter(function (a) { return a.key !== r.key; });
+        added.push({ key: r.key, value: r.value });
+      }
+    });
+    items.sort(function (a, b) {
+      return b.where.length - a.where.length || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+    });
+    items.forEach(function (it) { delete it.cur; });
+    return { keys: items, added: added };
   }
 
   // tagRuleProblem returns the i18n key of what is wrong with a rule row, or "" when it looks fine.
@@ -154,6 +208,8 @@
     influxVersion: influxVersion,
     sinkVariant: sinkVariant,
     tagRules: tagRules,
+    orderRules: orderRules,
+    tagPreview: tagPreview,
     tagRuleProblem: tagRuleProblem,
     sinkPayload: sinkPayload,
     sinkValues: sinkValues,
@@ -583,7 +639,7 @@
       name: "", type: "influxdb", url: "", influx_version: "v1", org: "", db: "", username: "",
       credential_id: "", enabled: true, password: "", token: "", tag_rules: []
     };
-    state.editing = { original: s || null, rules: v.tag_rules };
+    state.editing = { original: s || null, rules: orderRules(v.tag_rules), keys: null, keysError: false };
     $("s-rules").open = v.tag_rules.length > 0;
     $("s-name").value = v.name || "";
     $("s-type").value = v.type === "otlp" ? "otlp" : "influxdb";
@@ -597,6 +653,7 @@
     $("s-credential_id").value = v.credential_id || "";
     $("s-enabled").checked = !!v.enabled;
     hideResult($("sink-form-result"));
+    loadTagKeys();
     renderSinkDialog();
     var d = $("sink-dialog");
     if (typeof d.showModal === "function") d.showModal(); else d.setAttribute("open", "");
@@ -651,27 +708,128 @@
   }
 
   // ---- tag and label rules ----
+  // state.editing.rules is one list: the change rows (rename, drop) first, then the add rows (orderRules).
 
-  var RULE_ACTION_LABELS = { rename: "sinks.rule_rename", drop: "sinks.rule_drop", add: "sinks.rule_add" };
+  var RULE_ACTION_LABELS = { rename: "sinks.rule_rename", drop: "sinks.rule_drop" };
+
+  function changeCount(rules) {
+    var n = 0;
+    while (n < rules.length && rules[n].action !== "add") n++;
+    return n;
+  }
+
+  function updateRuleCount() {
+    var n = tagRules(state.editing.rules).length;
+    $("s-rules-count").textContent = n ? "(" + n + ")" : "";
+  }
 
   function renderRules(type) {
     var rules = state.editing.rules;
     var otlp = type === "otlp";
-    var n = tagRules(rules).length;
+    var c = changeCount(rules);
+    var full = rules.length >= MAX_TAG_RULES;
+    updateRuleCount();
     $("s-rules-title").textContent = t(otlp ? "sinks.label_rules" : "sinks.tag_rules");
-    $("s-rules-count").textContent = n ? "(" + n + ")" : "";
     $("s-rules-hint").textContent = t(otlp ? "sinks.rules_hint_otlp" : "sinks.rules_hint_influxdb");
-    $("s-rule-add").disabled = rules.length >= MAX_TAG_RULES;
-    $("s-rules-max").hidden = rules.length < MAX_TAG_RULES;
+    $("s-add-title").textContent = t(otlp ? "sinks.add_labels_title" : "sinks.add_tags_title");
+    $("s-add-hint").textContent = t(otlp ? "sinks.add_hint_otlp" : "sinks.add_hint_influxdb");
+    $("s-add-row").textContent = t(otlp ? "sinks.add_label_row" : "sinks.add_tag_row");
+    $("s-change-title").textContent = t(otlp ? "sinks.change_labels_title" : "sinks.change_tags_title");
+    $("s-add-row").disabled = full;
+    $("s-rule-add").disabled = full;
+    $("s-rules-max").hidden = !full;
+    var addList = $("s-add-list");
     var list = $("s-rules-list");
+    addList.textContent = "";
     list.textContent = "";
-    rules.forEach(function (r, i) { list.appendChild(ruleRow(r, i, rules.length)); });
+    rules.forEach(function (r, i) {
+      if (i < c) list.appendChild(changeRow(r, i, c));
+      else addList.appendChild(addRow(r, i));
+    });
+    renderKeys();
   }
+
+  // ---- keys the sink sends, from GET /api/v1/tag-keys ----
+
+  function loadTagKeys() {
+    var ed = state.editing;
+    ed.keys = null;
+    ed.keysError = false;
+    var cred = $("s-credential_id").value.trim();
+    api("GET", "/api/v1/tag-keys" + (cred ? "?credential_id=" + encodeURIComponent(cred) : "")).then(function (res) {
+      if (state.editing !== ed) return;
+      if (res.ok && res.data) ed.keys = res.data;
+      else ed.keysError = true;
+      renderKeys();
+    }, function () {
+      if (state.editing !== ed) return;
+      ed.keysError = true;
+      renderKeys();
+    });
+  }
+
+  function keysOfType() {
+    var ed = state.editing;
+    if (!ed || !ed.keys) return null;
+    return ($("s-type").value === "otlp" ? ed.keys.otlp : ed.keys.influxdb) || [];
+  }
+
+  function renderKeys() {
+    var ed = state.editing;
+    if (!ed) return;
+    var otlp = $("s-type").value === "otlp";
+    var box = $("s-keys");
+    var opts = $("s-key-options");
+    box.textContent = "";
+    opts.textContent = "";
+    var keys = keysOfType();
+    $("s-keys-hint").textContent = t(otlp ? "sinks.keys_hint_otlp" : "sinks.keys_hint_influxdb");
+    if (!keys) {
+      box.appendChild(el("p", { className: "hint", text: t(ed.keysError ? "sinks.keys_error" : "sinks.keys_loading") }));
+      return;
+    }
+    var view = tagPreview(keys, ed.rules);
+    view.added.forEach(function (a) {
+      box.appendChild(el("span", { className: "tag-key tag-added", text: "+ " + a.key + " = " + a.value,
+        title: t("sinks.key_added") }));
+    });
+    view.keys.forEach(function (k) {
+      opts.appendChild(el("option", { attrs: { value: k.key } }));
+      var cls = "tag-key";
+      var text = k.key;
+      if (k.dropped) cls += " tag-dropped";
+      else {
+        if (k.to) { cls += " tag-renamed"; text += " \u2192 " + k.to; }
+        if (k.value) { cls += " tag-set"; text += " = " + k.value; }
+      }
+      var tip = t("sinks.key_example", { v: k.example }) + "\n" + t("sinks.key_where", { list: k.where.join(", ") });
+      box.appendChild(el("button", { className: cls, text: text, title: tip,
+        attrs: { type: "button", "data-key": k.key }, on: { click: function () { editKey(k.key); } } }));
+    });
+  }
+
+  // editKey jumps to the change row of key, or adds a rename row for it.
+  function editKey(key) {
+    var rules = state.editing.rules;
+    var c = changeCount(rules);
+    for (var i = 0; i < c; i++) {
+      if (ruleText(rules[i].key) === key) {
+        $("s-rules-list").children[i].querySelector(".rule-key").focus();
+        return;
+      }
+    }
+    if (rules.length >= MAX_TAG_RULES) return;
+    rules.splice(c, 0, { action: "rename", key: key, new_key: "", value: "" });
+    renderRules($("s-type").value);
+    $("s-rules-list").children[c].querySelector(".rule-new-key").focus();
+  }
+
+  // ---- rule rows ----
 
   function moveRule(i, delta) {
     var rules = state.editing.rules;
     var j = i + delta;
-    if (j < 0 || j >= rules.length) return;
+    if (j < 0 || j >= changeCount(rules)) return;
     var r = rules[i];
     rules[i] = rules[j];
     rules[j] = r;
@@ -690,8 +848,8 @@
     input.addEventListener("input", function () {
       r[field] = input.value;
       showRuleProblem(r, problemBox);
-      var n = tagRules(state.editing.rules).length;
-      $("s-rules-count").textContent = n ? "(" + n + ")" : "";
+      updateRuleCount();
+      renderKeys();
     });
     return input;
   }
@@ -702,10 +860,19 @@
     box.hidden = !key;
   }
 
-  function ruleRow(r, i, count) {
+  function removeButton(i, focusAfter) {
+    return el("button", { className: "btn btn-small btn-danger rule-remove", text: t("sinks.rule_remove"),
+      attrs: { type: "button" }, on: { click: function () {
+        state.editing.rules.splice(i, 1);
+        renderRules($("s-type").value);
+        $(focusAfter).focus();
+      } } });
+  }
+
+  function changeRow(r, i, count) {
     var problem = el("p", { className: "hint error-text rule-problem" });
     var action = el("select", { className: "rule-action", attrs: { "aria-label": t("sinks.rule_action") } },
-      RULE_ACTIONS.map(function (a) { return el("option", { text: t(RULE_ACTION_LABELS[a]), attrs: { value: a } }); }));
+      CHANGE_ACTIONS.map(function (a) { return el("option", { text: t(RULE_ACTION_LABELS[a]), attrs: { value: a } }); }));
     action.value = r.action;
     action.addEventListener("change", function () {
       r.action = action.value;
@@ -713,26 +880,21 @@
       var row = $("s-rules-list").children[i];
       if (row) row.querySelector(".rule-action").focus();
     });
-    var second;
-    if (r.action === "rename") second = ruleInput(r, "new_key", "sinks.rule_new_key", "hostname", problem);
-    else if (r.action === "add") second = ruleInput(r, "value", "sinks.rule_value", "dev", problem);
-    else second = el("span", { className: "rule-empty", attrs: { "aria-hidden": "true" } });
-    var keyHolder = r.action === "add" ? "env" : "host";
+    var key = ruleInput(r, "key", "sinks.rule_key", "host", problem);
+    key.setAttribute("list", "s-key-options");
+    var second = r.action === "rename"
+      ? ruleInput(r, "new_key", "sinks.rule_new_key", "hostname", problem)
+      : el("span", { className: "rule-empty", attrs: { "aria-hidden": "true" } });
     var row = el("div", { className: "rule-row" }, [
+      key,
       action,
-      ruleInput(r, "key", "sinks.rule_key", keyHolder, problem),
       second,
       el("span", { className: "rule-buttons" }, [
         el("button", { className: "btn btn-small rule-up", text: "\u2191", title: t("sinks.rule_up"),
           attrs: { type: "button", "aria-label": t("sinks.rule_up") }, on: { click: function () { moveRule(i, -1); } } }),
         el("button", { className: "btn btn-small rule-down", text: "\u2193", title: t("sinks.rule_down"),
           attrs: { type: "button", "aria-label": t("sinks.rule_down") }, on: { click: function () { moveRule(i, 1); } } }),
-        el("button", { className: "btn btn-small btn-danger rule-remove", text: t("sinks.rule_remove"),
-          attrs: { type: "button" }, on: { click: function () {
-            state.editing.rules.splice(i, 1);
-            renderRules($("s-type").value);
-            $("s-rule-add").focus();
-          } } })
+        removeButton(i, "s-rule-add")
       ]),
       problem
     ]);
@@ -742,12 +904,34 @@
     return row;
   }
 
-  function addRule() {
+  function addRow(r, i) {
+    var problem = el("p", { className: "hint error-text rule-problem" });
+    var row = el("div", { className: "rule-row add-row" }, [
+      ruleInput(r, "key", "sinks.rule_key", "env", problem),
+      el("span", { className: "add-eq", text: "=", attrs: { "aria-hidden": "true" } }),
+      ruleInput(r, "value", "sinks.rule_value", "dev", problem),
+      el("span", { className: "rule-buttons" }, [removeButton(i, "s-add-row")]),
+      problem
+    ]);
+    showRuleProblem(r, problem);
+    return row;
+  }
+
+  function addChangeRow() {
     if (!state.editing || state.editing.rules.length >= MAX_TAG_RULES) return;
-    state.editing.rules.push({ action: "rename", key: "", new_key: "", value: "" });
+    var c = changeCount(state.editing.rules);
+    state.editing.rules.splice(c, 0, { action: "rename", key: "", new_key: "", value: "" });
     $("s-rules").open = true;
     renderRules($("s-type").value);
-    var rows = $("s-rules-list").children;
+    $("s-rules-list").children[c].querySelector(".rule-key").focus();
+  }
+
+  function addAddRow() {
+    if (!state.editing || state.editing.rules.length >= MAX_TAG_RULES) return;
+    state.editing.rules.push({ action: "add", key: "", new_key: "", value: "" });
+    $("s-rules").open = true;
+    renderRules($("s-type").value);
+    var rows = $("s-add-list").children;
     rows[rows.length - 1].querySelector(".rule-key").focus();
   }
 
@@ -818,7 +1002,8 @@
     $("s-type").addEventListener("change", renderSinkDialog);
     $("s-influx_version").addEventListener("change", renderSinkDialog);
     $("s-url").addEventListener("input", renderSinkDialog);
-    $("s-rule-add").addEventListener("click", addRule);
+    $("s-rule-add").addEventListener("click", addChangeRow);
+    $("s-add-row").addEventListener("click", addAddRow);
     document.addEventListener("visibilitychange", function () {
       if (!document.hidden) refreshStatus();
     });

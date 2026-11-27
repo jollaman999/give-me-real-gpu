@@ -19,11 +19,17 @@ var (
 type batch struct {
 	lines []string
 	rules []tagrules.Rule // applied to the tags of every point
+	keys  *tagrules.KeySet // when set, records the tags of every point before the rules
 }
 
 // add appends one point. The tag rules run on a copy of tags, empty tag values are dropped
 // (InfluxDB rejects them), and a point without any field is skipped.
 func (b *batch) add(name string, tags map[string]string, fields map[string]any, ts int64) {
+	if b.keys != nil {
+		for k, v := range tags {
+			b.keys.Add(name, k, v)
+		}
+	}
 	tags = tagrules.ApplyTags(b.rules, tags)
 	if line := formatLine(name, tags, fields, ts); line != "" {
 		b.lines = append(b.lines, line)

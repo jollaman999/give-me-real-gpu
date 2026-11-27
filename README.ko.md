@@ -305,6 +305,7 @@ curl -s -X PUT http://localhost:15080/api/v1/settings \
 | `GET`, `PUT /api/v1/settings` | 일반 설정. `PUT` 에서 뺀 키는 값을 그대로 둡니다 |
 | `GET`, `POST /api/v1/sinks`, `PUT`, `DELETE /api/v1/sinks/<id>` | sink. `PUT` 에서 뺀 키는 값을 그대로 둡니다 |
 | `POST /api/v1/sinks`, `PUT /api/v1/sinks/<id>` 의 `tag_rules` | 그 sink 의 [tag 와 라벨 규칙](#tag-와-라벨-규칙). `PUT` 은 목록 전체를 바꾸고, `[]` 이면 규칙을 모두 지웁니다. 키를 빼거나 `null` 로 보내면 저장된 규칙을 그대로 둡니다 |
+| `GET /api/v1/tag-keys` | 저장된 토폴로지가 규칙 없이 보내는 tag 키(`influxdb`)와 라벨 키(`otlp`), 키마다 예시 값 하나. [tag 와 라벨 규칙](#tag-와-라벨-규칙) 참고 |
 | `GET`, `PUT /api/v1/topology`, `POST /api/v1/topology/reset` | 저장된 토폴로지. `PUT` 은 빈 칸을 채우지 않고 보낸 그대로 저장합니다 |
 | `POST /api/v1/topology/fill` | 본문의 토폴로지에서 빈 칸을 채우고 문제를 나열합니다. 저장하지 않습니다 |
 | `GET /api/v1/topology/catalog` | 편집기가 내놓는 GPU 모델, 프로필, flavor |
@@ -469,7 +470,8 @@ sink 마다 규칙(`tag_rules`)으로 그 sink 가 쓰는 tag(`influxdb` sink)�
 - `influxdb` sink: tag 에만 적용합니다. measurement 이름, field 이름과 값은 그대로입니다.
 - `otlp` sink: `rename`·`drop` 은 데이터 포인트 속성과 resource 속성(프로세스 resource 의 `process.pid` 등)에 적용합니다.
   `add` 는 모든 데이터 포인트에만 붙이고, resource 에서는 이미 있는 키의 값만 바꿉니다. 지표 이름은 그대로입니다.
-- 규칙은 키를 바꾸고 값은 바꾸지 않습니다. 이미 있는 tag 나 속성의 값을 고쳐 쓰는 규칙은 없습니다.
+- `rename` 과 `drop` 은 값을 바꾸지 않습니다. 이미 보내는 키의 값을 바꾸는 방법은 같은 키로 `add` 를 넣어 고정 값으로
+  덮어쓰는 것뿐입니다.
 
 아래를 어기면 저장이 거부됩니다(다른 [설정 API](#설정-api) 문제와 같이 400).
 
@@ -479,7 +481,23 @@ sink 마다 규칙(`tag_rules`)으로 그 sink 가 쓰는 tag(`influxdb` sink)�
 - 키와 값에 줄바꿈이 들어가면 안 됩니다.
 - sink 하나에 규칙은 최대 50개입니다.
 
-설정 화면에서는 sink 대화 상자에서 `influxdb` sink 는 **Tag 규칙**, `otlp` sink 는 **라벨 규칙** 에서 고칩니다. API 로는 sink 와 함께 보냅니다.
+설정 화면에서는 sink 대화 상자에서 `influxdb` sink 는 **Tag 규칙**, `otlp` sink 는 **라벨 규칙** 에서 고칩니다.
+두 칸으로 나뉩니다.
+
+- **고정 tag 붙이기** (**고정 라벨 붙이기**): 한 줄에 `key = value` 하나를 적습니다. 한 줄이 `add` 규칙 하나입니다.
+- **이미 보내는 tag 바꾸기** (**이미 보내는 라벨 바꾸기**): 그 sink 가 지금 보내는 키를 많이 쓰이는 것부터 칩으로 보여 줍니다.
+  칩에 마우스를 올리면 예시 값과 그 키가 실리는 곳이 보이고, 누르면 그 키의 이름을 바꾸거나 뺄 줄이 생깁니다. 칩은 규칙의 결과를
+  그대로 보여 줍니다. 이름을 바꾼 키는 `host → hostname`, 뺀 키는 취소선, `add` 로 값을 덮어쓴 키는 `key = value`,
+  `add` 로만 생기는 키는 `+ key = value` 로 그립니다.
+
+화면은 바꾸기 줄을 적힌 순서대로 먼저, 고정 tag 를 그 뒤에 저장합니다. 그래서 고정으로 넣은 key=value 는 항상 결과에 남습니다.
+API 로 `add` 를 목록 가운데에 넣어 저장한 sink 도 화면에서는 같은 방식으로 보이고, 화면에서 다시 저장하면 이 순서로 저장됩니다.
+
+칩 목록은 `GET /api/v1/tag-keys` 가 줍니다. 저장된 토폴로지로 규칙 없이 수집을 한 번 돌려 버리고, sink 종류마다 모든 키와
+예시 값, 그 키가 실리는 measurement(InfluxDB)나 `resource`·`point`(OTLP)를 돌려줍니다. `?credential_id=<id>` 를 붙이면
+예시의 `credential_id` tag 와 `uuid` 앞부분을 그 값으로 채웁니다.
+
+API 로는 규칙을 sink 와 함께 보냅니다.
 
 ```sh
 curl -s -X POST http://localhost:15080/api/v1/sinks \

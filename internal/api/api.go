@@ -14,6 +14,8 @@ import (
 
 	"github.com/labstack/echo/v5"
 
+	"github.com/jollaman999/give-me-real-gpu/internal/metrics"
+	"github.com/jollaman999/give-me-real-gpu/internal/otelgen"
 	"github.com/jollaman999/give-me-real-gpu/internal/store"
 	"github.com/jollaman999/give-me-real-gpu/internal/tagrules"
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
@@ -139,6 +141,7 @@ func Register(e *echo.Echo, st *store.Store, sp StatusProvider) {
 	g.GET("/topology", h.getTopology)
 	g.PUT("/topology", h.putTopology)
 	g.POST("/topology/reset", h.resetTopology)
+	g.GET("/tag-keys", h.getTagKeys)
 }
 
 func (h *handler) getStatus(c *echo.Context) error {
@@ -290,6 +293,33 @@ func (h *handler) getTopology(c *echo.Context) error {
 		return fail(c, err)
 	}
 	return c.JSON(http.StatusOK, snap.Topology)
+}
+
+// tagKeysOut is the body of GET /api/v1/tag-keys: the keys the stored topology emits before any rule.
+type tagKeysOut struct {
+	InfluxDB []tagrules.KeyInfo `json:"influxdb"` // line protocol tags
+	OTLP     []tagrules.KeyInfo `json:"otlp"`     // data point and resource attributes
+}
+
+// exampleCredentialID stands in for the credential_id tag value when the request names none, so the key is listed.
+const exampleCredentialID = "credential-id"
+
+// getTagKeys runs one throwaway collection of each generator over the stored topology. The optional
+// credential_id query value is used for the credential_id tag and the uuid prefix of the examples.
+func (h *handler) getTagKeys(c *echo.Context) error {
+	snap, err := h.st.Snapshot()
+	if err != nil {
+		return fail(c, err)
+	}
+	cred := strings.TrimSpace(c.QueryParam("credential_id"))
+	if cred == "" {
+		cred = exampleCredentialID
+	}
+	now := time.Now()
+	return c.JSON(http.StatusOK, tagKeysOut{
+		InfluxDB: metrics.TagKeys(snap.Topology, cred, now),
+		OTLP:     otelgen.LabelKeys(snap.Topology, now),
+	})
 }
 
 func (h *handler) putTopology(c *echo.Context) error {

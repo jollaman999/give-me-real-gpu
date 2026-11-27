@@ -133,6 +133,21 @@ func NewGenerator(t *topology.Topology, opt Options) *Generator {
 // IP report at 60s, procstat at 60s, the guest CUDA probe at 5m) are emitted only on
 // the first call that falls into a new interval slot.
 func (g *Generator) Collect(now time.Time) []string {
+	b := &batch{rules: g.opt.TagRules}
+	g.collect(b, now)
+	return b.lines
+}
+
+// TagKeys returns the tag keys one first collection of t emits, before any tag rule, with an example value
+// and the measurements that carry each key. XID points are forced on so their tags are listed too.
+func TagKeys(t *topology.Topology, credentialID string, now time.Time) []tagrules.KeyInfo {
+	g := NewGenerator(t, Options{CredentialID: credentialID, Seed: 1, XIDRate: 1})
+	keys := &tagrules.KeySet{}
+	g.collect(&batch{keys: keys}, now)
+	return keys.List()
+}
+
+func (g *Generator) collect(b *batch, now time.Time) {
 	dt := 0.0
 	if !g.last.IsZero() && now.After(g.last) {
 		dt = now.Sub(g.last).Seconds()
@@ -146,7 +161,6 @@ func (g *Generator) Collect(now time.Time) []string {
 		}
 	}
 
-	b := &batch{rules: g.opt.TagRules}
 	for _, hs := range g.hosts {
 		g.emitHost(b, hs, now, dt, due60)
 	}
@@ -154,7 +168,6 @@ func (g *Generator) Collect(now time.Time) []string {
 		g.emitVM(b, vs, now, dt, due60, due5m)
 	}
 	g.last = now
-	return b.lines
 }
 
 // due reports whether now starts a new slot of the given period and records it.
