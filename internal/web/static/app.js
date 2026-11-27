@@ -880,8 +880,9 @@
       var row = $("s-rules-list").children[i];
       if (row) row.querySelector(".rule-action").focus();
     });
-    var key = ruleInput(r, "key", "sinks.rule_key", "host", problem);
+    var key = ruleInput(r, "key", "sinks.rule_key", t("sinks.rule_key_placeholder"), problem);
     key.setAttribute("list", "s-key-options");
+    key.title = t("sinks.rule_key_title");
     var second = r.action === "rename"
       ? ruleInput(r, "new_key", "sinks.rule_new_key", "hostname", problem)
       : el("span", { className: "rule-empty", attrs: { "aria-hidden": "true" } });
@@ -907,7 +908,7 @@
   function addRow(r, i) {
     var problem = el("p", { className: "hint error-text rule-problem" });
     var row = el("div", { className: "rule-row add-row" }, [
-      ruleInput(r, "key", "sinks.rule_key", "env", problem),
+      ruleInput(r, "key", "sinks.rule_key", t("sinks.rule_add_key_placeholder"), problem),
       el("span", { className: "add-eq", text: "=", attrs: { "aria-hidden": "true" } }),
       ruleInput(r, "value", "sinks.rule_value", "dev", problem),
       el("span", { className: "rule-buttons" }, [removeButton(i, "s-add-row")]),

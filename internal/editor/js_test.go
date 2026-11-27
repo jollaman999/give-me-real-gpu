@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/jollaman999/give-me-real-gpu/internal/topology"
@@ -40,7 +41,7 @@ out.migGPU = v({h: 2, g: 0}, {kind: "new-vm"});
 out.migFull = v({h: 2, g: 3}, {kind: "new-vm"});
 out.migFreeArea = v({h: 3, g: 1, free: true}, {kind: "new-vm"});
 out.gpuOnPT = h.acceptGPU(topo, cat, 4, "NVIDIA A10").ok;
-out.gpuOnMIG = h.acceptGPU(topo, cat, 2, "NVIDIA A10").reason;
+out.gpuOnMIG = h.acceptGPU(topo, cat, 2, "NVIDIA A10").mode;
 const h100 = cat.gpu_models.find(m => m.name === "NVIDIA H100 80GB HBM3");
 const g = {model_name: h100.name, mig_instances: []};
 for (const name of ["3g.40gb", "1g.10gb", "1g.10gb"]) g.mig_instances.push(h.newInstance(g, h100.mig_profiles.find(p => p.name === name)));
@@ -111,7 +112,10 @@ out.jsonMarks = [set2.has(j.hypervisors[1]), set2.has(j.hypervisors[0]), set2.ha
 console.log(JSON.stringify(out));
 `
 
-func TestTopologyJSHelpers(t *testing.T) {
+// runTopologyJS runs script in node with topology.js, the default catalog and the default topology as arguments
+// and decodes the JSON it prints.
+func runTopologyJS(t *testing.T, script string) map[string]any {
+	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node not installed")
@@ -120,14 +124,13 @@ func TestTopologyJSHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := filepath.Join(t.TempDir(), "check.js")
-	if err := os.WriteFile(script, []byte(jsScript), 0o600); err != nil {
+	file := filepath.Join(t.TempDir(), "check.js")
+	if err := os.WriteFile(file, []byte(script), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cat, _ := json.Marshal(topology.DefaultCatalog())
-	def := topology.Default()
-	topo, _ := json.Marshal(def)
-	raw, err := exec.Command(node, script, src, string(cat), string(topo)).CombinedOutput()
+	topo, _ := json.Marshal(topology.Default())
+	raw, err := exec.Command(node, file, src, string(cat), string(topo)).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node: %v\n%s", err, raw)
 	}
@@ -135,6 +138,12 @@ func TestTopologyJSHelpers(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("%v: %s", err, raw)
 	}
+	return got
+}
+
+func TestTopologyJSHelpers(t *testing.T) {
+	got := runTopologyJS(t, jsScript)
+	def := topology.Default()
 	long := ""
 	for range 100 {
 		long += "x"
@@ -161,7 +170,7 @@ func TestTopologyJSHelpers(t *testing.T) {
 		"migFull":        "no_slices",
 		"migFreeArea":    "create:1g.10gb",
 		"gpuOnPT":        true,
-		"gpuOnMIG":       "mode_model",
+		"gpuOnMIG":       "VGPU",
 		"gi":             []any{1.0, 7.0, 8.0},
 		"slices":         5.0,
 		"problems": map[string]any{
@@ -187,6 +196,188 @@ func TestTopologyJSHelpers(t *testing.T) {
 			"uniqueNodes": 7.0,
 		},
 		"jsonMarks": []any{true, false, false, false, true, false, false},
+	}
+	for k, w := range want {
+		if !reflect.DeepEqual(got[k], w) {
+			t.Errorf("%s = %#v, want %#v", k, got[k], w)
+		}
+	}
+}
+
+// jsModeScript checks the per-GPU type helpers: type changes that keep and fit the VMs, slice counts per model,
+// GPUs of any known model on any node and the type tags of a node.
+const jsModeScript = `
+const h = require(process.argv[2]);
+const cat = JSON.parse(process.argv[3]);
+const topo = JSON.parse(process.argv[4]);
+const copy = (x) => JSON.parse(JSON.stringify(x));
+const out = {};
+const a10 = cat.gpu_models.find(m => m.name === "NVIDIA A10");
+const a100 = cat.gpu_models.find(m => m.name === "NVIDIA A100-SXM4-80GB");
+const vp = (name) => ({name: name, type: "nvidia-1", framebuffer_mb: 1024, max_instances: 1});
+// A model cut into four MIG slices, as RTX PRO 6000 Blackwell: 4g once, 2g twice, 1g four times.
+const four = {name: "Test 4-slice GPU", memory_mib: 97887, modes: ["VGPU", "MIG", "PASSTHROUGH"], max_mig_slices: 4,
+  vgpu_profiles: [], mig_profiles: [
+    {name: "4g.96gb", slices: 4, memory_mib: 95000, gpu_instance_ids: [0], vgpu_profile: vp("x-4")},
+    {name: "2g.48gb", slices: 2, memory_mib: 47744, gpu_instance_ids: [1, 2], vgpu_profile: vp("x-2")},
+    {name: "1g.24gb", slices: 1, memory_mib: 23000, gpu_instance_ids: [3, 4, 5, 6], vgpu_profile: vp("x-1")}]};
+cat.gpu_models.push(four);
+const vms = (node, n, mode) => Array.from({length: n}, (_, i) => ({name: "vm" + (i + 1), hypervisor: node, gpu_index: 0,
+  mode: mode, mig_gpu_instance_id: -1, guest_driver_version: "550", vgpu_uuid: "u" + i, flavor_id: "f"}));
+const view = (t, hi, gi, r) => {
+  const n = t.hypervisors[hi], g = n.gpus[gi];
+  return {
+    changed: r.changed, removed: r.removed, mode: g.mode, eff: h.gpuMode(n, g),
+    profile: g.profile ? g.profile.name : null,
+    mig: g.mig_instances === undefined ? null : g.mig_instances.map(mi => mi.profile + "#" + mi.gpu_instance_id),
+    vms: g.vms.map(v => [v.name, v.mode, v.mig_gpu_instance_id, v.guest_driver_version, v.vgpu_uuid, v.flavor_id].join(" ")),
+  };
+};
+
+// vGPU GPU with six VMs to passthrough: one VM stays, five go.
+const t1 = copy(topo);
+out.vgpuToPT = view(t1, 0, 0, h.convertGPU(t1, cat, 0, 0, "PASSTHROUGH"));
+// And back to vGPU: the VM stays and the GPU gets the model's first vGPU profile.
+out.ptToVGPU = view(t1, 0, 0, h.convertGPU(t1, cat, 0, 0, "VGPU"));
+out.same = h.convertGPU(t1, cat, 0, 0, "VGPU").changed;
+
+// vGPU GPU with three VMs on a seven-slice model to MIG: one 1g instance per VM.
+const t2 = {flavors: [], hypervisors: [{hostname: "n1", mode: "VGPU", gpus: [
+  {index: 0, model_name: a100.name, profile: vp("p"), vms: vms("n1", 3, "VGPU")}]}]};
+t2.hypervisors[0].gpus[0].profile.max_instances = 4;
+out.vgpuToMIG = view(t2, 0, 0, h.convertGPU(t2, cat, 0, 0, "MIG"));
+out.mixedTags = h.nodeModes(t2.hypervisors[0]);
+
+// Five VMs on a four-slice model to MIG: four get a 1g instance, the fifth is deleted.
+const t3 = {flavors: [], hypervisors: [{hostname: "n2", mode: "PASSTHROUGH", gpus: [
+  {index: 0, model_name: four.name, mode: "VGPU", profile: vp("q"), vms: vms("n2", 5, "VGPU")}]}]};
+t3.hypervisors[0].gpus[0].profile.max_instances = 8;
+out.fourToMIG = view(t3, 0, 0, h.convertGPU(t3, cat, 0, 0, "MIG"));
+out.fourFull = (() => { const r = h.acceptVM(t3, cat, {h: 0, g: 0, free: true}, {kind: "new-vm"}); return r.reason + " " + r.params.used + "/" + r.params.max; })();
+
+// Slices per model.
+const fg = {model_name: four.name, mig_instances: []};
+fg.mig_instances.push(h.newInstance(fg, four.mig_profiles[1]));
+const ag = {model_name: a100.name, mig_instances: []};
+ag.mig_instances.push(h.newInstance(ag, a100.mig_profiles.find(p => p.name === "3g.40gb")));
+out.fitFour = h.fittingProfiles(cat, fg).map(p => p.name);
+out.fitA100 = h.fittingProfiles(cat, ag).map(p => p.name);
+out.slices = [h.maxSlices(cat, fg), h.maxSlices(cat, ag), h.maxSlices(cat, {model_name: "unknown"}), h.maxSlices({gpu_models: []}, fg)];
+
+// Any known model goes on any node, in the node's default type when the model has it.
+const ag2 = (hi, model) => { const r = h.acceptGPU(topo, cat, hi, model); return r.ok ? r.mode : r.reason; };
+out.acceptGPU = [ag2(2, a10.name), ag2(0, a100.name), ag2(4, a10.name), ag2(0, a10.name), ag2(0, "no such model")];
+const ng = (hi, model) => { const g = h.newGPU(topo, cat, hi, model); return [g.index, g.mode, g.profile ? g.profile.name : null, g.mig_instances ? g.mig_instances.length : null]; };
+out.newGPU = [ng(2, a10.name), ng(0, a100.name)];
+
+// acceptVM goes by the GPU's own type on a node of another default type.
+const t4 = copy(topo);
+h.convertGPU(t4, cat, 0, 3, "PASSTHROUGH");
+const pt = () => { const r = h.acceptVM(t4, cat, {h: 0, g: 3}, {kind: "new-vm"}); return r.ok ? "ok" : r.reason; };
+out.ptOnVGPUNode = [pt()];
+t4.hypervisors[0].gpus[3].vms.push({name: "x", mode: "PASSTHROUGH", mig_gpu_instance_id: -1});
+out.ptOnVGPUNode.push(pt());
+
+// vGPU type per MIG instance. A kind from an older catalog without vgpu_profiles offers its vgpu_profile only.
+const old = copy(a100.mig_profiles.find(p => p.name === "1g.10gb"));
+delete old.vgpu_profiles;
+out.oldKind = h.migVGPUs(old).map(p => p.name);
+const og = {model_name: a100.name, mig_instances: []};
+og.mig_instances.push(h.newInstance(og, old));
+out.oldInst = og.mig_instances[0].vgpu_profile.name === old.vgpu_profile.name;
+const oldCat = copy(cat);
+oldCat.gpu_models.forEach(m => m.mig_profiles.forEach(p => delete p.vgpu_profiles));
+out.oldSet = [h.setInstanceVGPU(oldCat, og, og.mig_instances[0].gpu_instance_id, old.vgpu_profile.name),
+  h.setInstanceVGPU(oldCat, og, og.mig_instances[0].gpu_instance_id, "other")];
+// A kind with two types: a new instance takes the first, and the second can be picked without touching the VM.
+const k2 = four.mig_profiles[1];
+k2.vgpu_profiles = [vp("x-2-48Q"), vp("x-2-48C")];
+delete k2.vgpu_profile;
+const mg = {model_name: four.name, mig_instances: [], vms: [{name: "m1", mode: "MIG", flavor_id: "f2", vcpus: 8}]};
+mg.mig_instances.push(h.newInstance(mg, k2));
+mg.vms[0].mig_gpu_instance_id = mg.mig_instances[0].gpu_instance_id;
+const before = mg.mig_instances[0].vgpu_profile.name;
+out.pickVGPU = [before, h.setInstanceVGPU(cat, mg, 1, "x-2-48C"), mg.mig_instances[0].vgpu_profile.name,
+  h.setInstanceVGPU(cat, mg, 1, "nope"), mg.mig_instances[0].vgpu_profile.name, h.setInstanceVGPU(cat, mg, 9, "x-2-48Q"),
+  mg.vms[0].flavor_id + " " + mg.vms[0].vcpus];
+out.pickCopy = mg.mig_instances[0].vgpu_profile !== k2.vgpu_profiles[1];
+
+out.nodeModes = [
+  h.nodeModes({mode: "PASSTHROUGH", gpus: [{}, {mode: "MIG"}, {mode: "VGPU"}]}),
+  h.nodeModes({mode: "MIG", gpus: []}),
+  h.nodeModes({mode: "VGPU", gpus: [{mode: "PASSTHROUGH"}, {mode: "PASSTHROUGH"}]}),
+  h.nodeModes(topo.hypervisors[0]),
+];
+console.log(JSON.stringify(out));
+`
+
+func TestTopologyJSModes(t *testing.T) {
+	got := runTopologyJS(t, jsModeScript)
+	def := topology.Default()
+	cat := topology.DefaultCatalog()
+	var a10First string
+	var a100GI []int
+	for _, m := range cat.GPUModels {
+		if m.Name == "NVIDIA A10" {
+			a10First = m.VGPUProfiles[0].Name
+		}
+		if m.Name == "NVIDIA A100-SXM4-80GB" {
+			for _, p := range m.MIGProfiles {
+				if p.Name == "1g.10gb" {
+					a100GI = p.GPUInstanceIDs
+				}
+			}
+		}
+	}
+	if a10First == "" || len(a100GI) < 3 {
+		t.Fatalf("catalog lacks the A10 vGPU profile or the A100 1g kind: %q %v", a10First, a100GI)
+	}
+	g0 := def.Hypervisors[0].GPUs[0]
+	var gone []any
+	for _, v := range g0.VMs[1:] {
+		gone = append(gone, v.Name)
+	}
+	keep := g0.VMs[0].Name
+	gi := func(i int) string { return strconv.Itoa(a100GI[i]) }
+	want := map[string]any{
+		"vgpuToPT": map[string]any{
+			"changed": true, "removed": gone, "mode": "PASSTHROUGH", "eff": "PASSTHROUGH", "profile": nil, "mig": nil,
+			"vms": []any{keep + " PASSTHROUGH -1   "},
+		},
+		"ptToVGPU": map[string]any{
+			"changed": true, "removed": []any{}, "mode": "VGPU", "eff": "VGPU", "profile": a10First, "mig": nil,
+			"vms": []any{keep + " VGPU -1   "},
+		},
+		"same": false,
+		"vgpuToMIG": map[string]any{
+			"changed": true, "removed": []any{}, "mode": "MIG", "eff": "MIG", "profile": nil,
+			"mig": []any{"1g.10gb#" + gi(0), "1g.10gb#" + gi(1), "1g.10gb#" + gi(2)},
+			"vms": []any{"vm1 MIG " + gi(0) + " 550 u0 ", "vm2 MIG " + gi(1) + " 550 u1 ", "vm3 MIG " + gi(2) + " 550 u2 "},
+		},
+		"mixedTags": []any{"MIG"},
+		"fourToMIG": map[string]any{
+			"changed": true, "removed": []any{"vm5"}, "mode": "MIG", "eff": "MIG", "profile": nil,
+			"mig": []any{"1g.24gb#3", "1g.24gb#4", "1g.24gb#5", "1g.24gb#6"},
+			"vms": []any{"vm1 MIG 3 550 u0 ", "vm2 MIG 4 550 u1 ", "vm3 MIG 5 550 u2 ", "vm4 MIG 6 550 u3 "},
+		},
+		"fourFull":     "no_slices 4/4",
+		"fitFour":      []any{"1g.24gb", "2g.48gb"},
+		"fitA100":      []any{"1g.10gb", "2g.20gb", "3g.40gb"},
+		"slices":       []any{4.0, 7.0, 7.0, 7.0},
+		"acceptGPU":    []any{"VGPU", "MIG", "PASSTHROUGH", "VGPU", "unknown"},
+		"newGPU":       []any{[]any{4.0, "VGPU", a10First, nil}, []any{4.0, "MIG", nil, 0.0}},
+		"ptOnVGPUNode": []any{"ok", "full_pt"},
+		"oldKind":      []any{"NVIDIA A100D-1-10C"},
+		"oldInst":      true,
+		"oldSet":       []any{true, false},
+		"pickVGPU":     []any{"x-2-48Q", true, "x-2-48C", false, "x-2-48C", false, "f2 8"},
+		"pickCopy":     true,
+		"nodeModes": []any{
+			[]any{"VGPU", "MIG", "PASSTHROUGH"},
+			[]any{"MIG"},
+			[]any{"PASSTHROUGH"},
+			[]any{"VGPU"},
+		},
 	}
 	for k, w := range want {
 		if !reflect.DeepEqual(got[k], w) {

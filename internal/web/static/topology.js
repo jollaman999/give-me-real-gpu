@@ -6,7 +6,8 @@
 (function (root) {
   var MODES = ["VGPU", "MIG", "PASSTHROUGH"];
   var MODE_PREFIX = { VGPU: "emu-vgpu-", MIG: "emu-mig-", PASSTHROUGH: "emu-pt-" };
-  var MAX_SLICES = 7;
+  // DEFAULT_SLICES is the MIG slice count of a model the catalog gives none for.
+  var DEFAULT_SLICES = 7;
 
   // ---- pure helpers ----
 
@@ -142,6 +143,30 @@
     return arr(cat && cat.gpu_models).filter(function (m) { return m.name === name; })[0] || null;
   }
 
+  // gpuMode is the type a GPU runs in: its own mode, or its node's default when it has none.
+  function gpuMode(n, g) {
+    return (g && g.mode) || (n && n.mode) || "";
+  }
+
+  // nodeModes lists the types of a node's GPUs in MODES order, then unknown ones as they come.
+  // A node without GPUs shows its default type.
+  function nodeModes(n) {
+    var seen = [];
+    arr(n && n.gpus).forEach(function (g) {
+      var m = g ? gpuMode(n, g) : "";
+      if (m && seen.indexOf(m) < 0) seen.push(m);
+    });
+    if (!seen.length) return n && n.mode ? [n.mode] : [];
+    var known = MODES.filter(function (m) { return seen.indexOf(m) >= 0; });
+    return known.concat(seen.filter(function (m) { return MODES.indexOf(m) < 0; }));
+  }
+
+  // maxSlices is the number of MIG compute slices a GPU of this model has.
+  function maxSlices(cat, gpu) {
+    var m = modelOf(cat, gpu && gpu.model_name);
+    return (m && m.max_mig_slices) || (cat && cat.defaults && cat.defaults.max_mig_slices) || DEFAULT_SLICES;
+  }
+
   function usedSlices(gpu) {
     return arr(gpu && gpu.mig_instances).reduce(function (s, mi) { return s + (mi ? mi.slices || 0 : 0); }, 0);
   }
@@ -158,7 +183,7 @@
   // fittingProfiles returns the MIG kinds of the GPU's model that still fit, smallest first.
   function fittingProfiles(cat, gpu) {
     var m = modelOf(cat, gpu.model_name);
-    var left = MAX_SLICES - usedSlices(gpu);
+    var left = maxSlices(cat, gpu) - usedSlices(gpu);
     return arr(m && m.mig_profiles)
       .filter(function (p) { return p.slices <= left; })
       .sort(function (a, b) { return a.slices - b.slices; });
@@ -167,6 +192,29 @@
   function profileCopy(p) {
     if (!p) return null;
     return { name: p.name, type: p.type, framebuffer_mb: p.framebuffer_mb, max_instances: p.max_instances };
+  }
+
+  // migVGPUs lists the vGPU types a MIG kind offers, the default first. An older catalog has only vgpu_profile.
+  function migVGPUs(kind) {
+    if (arr(kind && kind.vgpu_profiles).length) return kind.vgpu_profiles;
+    return kind && kind.vgpu_profile ? [kind.vgpu_profile] : [];
+  }
+
+  // migKind finds the catalog MIG kind of an instance on the GPU.
+  function migKind(cat, gpu, mi) {
+    var m = modelOf(cat, gpu && gpu.model_name);
+    return arr(m && m.mig_profiles).filter(function (p) { return p && mi && p.name === mi.profile; })[0] || null;
+  }
+
+  // setInstanceVGPU gives the MIG instance with GI ID gi the vGPU type name of its kind. The VMs keep their flavor,
+  // which goes by the MIG kind. It answers false when there is no such instance or the kind has no such type.
+  function setInstanceVGPU(cat, gpu, gi, name) {
+    var mi = arr(gpu && gpu.mig_instances).filter(function (x) { return x && x.gpu_instance_id === gi; })[0];
+    if (!mi) return false;
+    var p = migVGPUs(migKind(cat, gpu, mi)).filter(function (x) { return x && x.name === name; })[0];
+    if (!p) return false;
+    mi.vgpu_profile = profileCopy(p);
+    return true;
   }
 
   // newInstance builds a MIG instance of the kind with the next GI ID on the GPU.
@@ -178,7 +226,7 @@
       profile: profile.name,
       slices: profile.slices,
       memory_mib: profile.memory_mib,
-      vgpu_profile: profileCopy(profile.vgpu_profile)
+      vgpu_profile: profileCopy(profile.vgpu_profile || migVGPUs(profile)[0])
     };
   }
 
@@ -188,15 +236,34 @@
     return gpu ? arr(gpu.vms)[v] || null : null;
   }
 
-  // acceptGPU tells whether a GPU of this model may go on node h.
+  // newGPUMode is the type a new GPU of model m gets on node n: the node's default when the model supports it,
+  // otherwise the model's first type.
+  function newGPUMode(n, m) {
+    var modes = arr(m && m.modes);
+    return modes.indexOf(n && n.mode) >= 0 ? n.mode : modes[0] || "";
+  }
+
+  // acceptGPU tells whether a GPU of this model may go on node h. The answer carries the type it would get.
   function acceptGPU(topo, cat, h, model) {
     var node = arr(topo.hypervisors)[h];
     var m = modelOf(cat, model);
     if (!node || !m) return { ok: false, reason: "unknown" };
-    if (arr(m.modes).indexOf(node.mode) < 0) {
-      return { ok: false, reason: "mode_model", params: { model: m.name, mode: node.mode } };
-    }
-    return { ok: true };
+    var mode = newGPUMode(node, m);
+    if (!mode) return { ok: false, reason: "mode_model", params: { model: m.name } };
+    return { ok: true, mode: mode };
+  }
+
+  // newGPU builds a GPU of the model for node h with the next free index. It always carries its mode.
+  function newGPU(topo, cat, h, modelName) {
+    var n = arr(topo.hypervisors)[h];
+    var m = modelOf(cat, modelName);
+    var index = 0;
+    arr(n && n.gpus).forEach(function (g) { if (g && g.index >= index) index = g.index + 1; });
+    var mode = newGPUMode(n, m) || (n && n.mode) || "";
+    var g = { index: index, model_name: modelName, mode: mode, vms: [] };
+    if (mode === "VGPU") g.profile = profileCopy(arr(m && m.vgpu_profiles)[0]);
+    if (mode === "MIG") g.mig_instances = [];
+    return g;
   }
 
   // acceptVM tells whether a VM may go on GPU (t.h, t.g). t.slot is the GI ID of a MIG instance the VM is dropped on,
@@ -209,7 +276,7 @@
     var moving = p.kind === "vm" ? vmAt(topo, p.h, p.g, p.v) : null;
     var same = !!moving && p.h === t.h && p.g === t.g;
     var others = arr(gpu.vms).filter(function (v) { return v && v !== moving; });
-    switch (node.mode) {
+    switch (gpuMode(node, gpu)) {
       case "PASSTHROUGH":
         if (same) return { ok: false, reason: "same" };
         if (others.length >= 1) return { ok: false, reason: "full_pt" };
@@ -239,11 +306,82 @@
         var fit = fittingProfiles(cat, gpu);
         if (!fit.length) {
           if (!modelOf(cat, gpu.model_name)) return { ok: false, reason: "no_mig_profile" };
-          return { ok: false, reason: "no_slices", params: { used: usedSlices(gpu), max: MAX_SLICES } };
+          return { ok: false, reason: "no_slices", params: { used: usedSlices(gpu), max: maxSlices(cat, gpu) } };
         }
         return { ok: true, create: fit[0] };
     }
     return { ok: false, reason: "unknown" };
+  }
+
+  function flavorOf(topo, id) {
+    return arr(topo && topo.flavors).filter(function (f) { return f && f.id === id; })[0] || null;
+  }
+
+  // resetFlavor drops the flavor so Fill picks the one that matches the new GPU. Sizes that came from the old
+  // flavor go with it; sizes the user changed stay.
+  function resetFlavor(topo, vm) {
+    var f = flavorOf(topo, vm.flavor_id);
+    if (f && vm.vcpus === f.vcpus && vm.memory_mb === f.ram_mb && vm.disk_gb === f.disk_gb) {
+      vm.vcpus = 0;
+      vm.memory_mb = 0;
+      vm.disk_gb = 0;
+    }
+    vm.flavor_id = "";
+  }
+
+  // convertGPU changes the type of GPU (h, g) and keeps its VMs, fitted to the new type: a passthrough GPU keeps the
+  // first VM, a vGPU GPU as many as its profile takes, a MIG GPU one per instance made from the smallest kind that
+  // still fits. It answers the names of the VMs that did not fit and were deleted.
+  function convertGPU(topo, cat, h, g, mode) {
+    var n = arr(topo && topo.hypervisors)[h];
+    var gp = n ? arr(n.gpus)[g] : null;
+    if (!gp) return { changed: false, removed: [] };
+    var old = gpuMode(n, gp);
+    if (old === mode) return { changed: false, removed: [] };
+    var m = modelOf(cat, gp.model_name);
+    var crossPT = (old === "PASSTHROUGH") !== (mode === "PASSTHROUGH");
+    var vms = arr(gp.vms).filter(Boolean);
+    vms.forEach(function (vm) {
+      vm.mode = mode;
+      vm.mig_gpu_instance_id = -1;
+      resetFlavor(topo, vm);
+      if (crossPT) {
+        vm.guest_driver_version = "";
+        vm.vgpu_uuid = "";
+      }
+    });
+    gp.mode = mode;
+    var keep = [], removed = [];
+    if (mode === "PASSTHROUGH") {
+      delete gp.profile;
+      delete gp.mig_instances;
+      keep = vms.slice(0, 1);
+      removed = vms.slice(1);
+    } else if (mode === "VGPU") {
+      delete gp.mig_instances;
+      if (!gp.profile) gp.profile = profileCopy(arr(m && m.vgpu_profiles)[0]);
+      var max = gp.profile ? gp.profile.max_instances || 0 : 0;
+      keep = vms.slice(0, max);
+      removed = vms.slice(max);
+    } else if (mode === "MIG") {
+      delete gp.profile;
+      gp.mig_instances = [];
+      vms.forEach(function (vm) {
+        var fit = fittingProfiles(cat, gp);
+        if (!fit.length) {
+          removed.push(vm);
+          return;
+        }
+        var mi = newInstance(gp, fit[0]);
+        gp.mig_instances.push(mi);
+        vm.mig_gpu_instance_id = mi.gpu_instance_id;
+        keep.push(vm);
+      });
+    } else {
+      keep = vms;
+    }
+    gp.vms = keep;
+    return { changed: true, removed: removed.map(function (vm) { return vm.name || "?"; }) };
   }
 
   // mapProblems sorts Validate lines by what they are about, so each card can show its own.
@@ -416,8 +554,16 @@
     vmName: vmName,
     freeGI: freeGI,
     usedSlices: usedSlices,
+    maxSlices: maxSlices,
+    fittingProfiles: fittingProfiles,
+    gpuMode: gpuMode,
+    nodeModes: nodeModes,
     newInstance: newInstance,
+    migVGPUs: migVGPUs,
+    setInstanceVGPU: setInstanceVGPU,
     acceptGPU: acceptGPU,
+    newGPU: newGPU,
+    convertGPU: convertGPU,
     acceptVM: acceptVM,
     mapProblems: mapProblems,
     markTree: markTree,
@@ -461,10 +607,11 @@
       pal_nodes: "Nodes",
       pal_gpus: "GPU models",
       pal_vm: "VM",
-      pal_hint: "Drag a node onto the canvas, a GPU model onto a node and a VM onto a GPU.",
+      pal_hint: "Drag a node onto the canvas, a GPU model onto a node and a VM onto a GPU. Right-click a node, GPU or VM for more, and press Delete to remove the selected one.",
       node_VGPU: "vGPU node",
       node_MIG: "MIG node",
       node_PASSTHROUGH: "Passthrough node",
+      node_title: "New GPUs on this node default to {mode}. Each GPU's type can be changed in its properties.",
       mode_VGPU: "vGPU",
       mode_MIG: "MIG",
       mode_PASSTHROUGH: "Passthrough",
@@ -483,7 +630,7 @@
       r_slot_used: "This GPU instance is used by {vm}",
       r_no_slices: "No MIG slices left ({used}/{max})",
       r_no_mig_profile: "No MIG profiles for this GPU model",
-      r_mode_model: "{model} cannot go on a {mode} node",
+      r_mode_model: "{model} has no GPU type to run in",
       r_unknown: "Cannot drop here",
       p_none: "Select a node, GPU or VM on the canvas.",
       p_project: "Project",
@@ -495,8 +642,11 @@
       f_project_name: "Project name",
       f_user_name: "User name",
       f_hostname: "Host name",
-      f_mode: "Mode",
-      f_mode_hint: "Set when the node is created. Delete and create the node to change it.",
+      f_mode: "Default type",
+      f_mode_hint: "The type new GPUs get. Change it per GPU in the GPU properties.",
+      f_gpu_mode: "Type",
+      f_gpu_mode_hint: "Changing it keeps the VMs and fits them to the new type. VMs that do not fit are deleted.",
+      mode_removed: "Changed GPU {gpu} to {mode} and deleted {n} VM(s): {names}",
       f_id: "ID",
       f_uuid: "UUID",
       f_host_ip: "Host IP",
@@ -522,6 +672,7 @@
       custom_profile: "{name} (custom)",
       col_gi: "GI",
       col_profile: "Profile",
+      col_vgpu: "vGPU",
       col_vm: "VM",
       add_gpu: "Add GPU",
       add_vm: "Add VM",
@@ -578,10 +729,11 @@
       pal_nodes: "노드",
       pal_gpus: "GPU 모델",
       pal_vm: "VM",
-      pal_hint: "노드는 캔버스에, GPU 모델은 노드에, VM 은 GPU 에 끌어다 놓습니다.",
+      pal_hint: "노드는 캔버스에, GPU 모델은 노드에, VM 은 GPU 에 끌어다 놓습니다. 노드, GPU, VM 을 우클릭하면 메뉴가 열리고, 선택한 것은 Delete 키로 지웁니다.",
       node_VGPU: "vGPU 노드",
       node_MIG: "MIG 노드",
       node_PASSTHROUGH: "Passthrough 노드",
+      node_title: "이 노드에 새로 넣는 GPU 는 기본으로 {mode} 유형이 됩니다. GPU 마다 속성에서 유형을 바꿀 수 있습니다.",
       mode_VGPU: "vGPU",
       mode_MIG: "MIG",
       mode_PASSTHROUGH: "Passthrough",
@@ -600,7 +752,7 @@
       r_slot_used: "이 GPU 인스턴스는 {vm} 이(가) 쓰고 있습니다",
       r_no_slices: "남은 MIG slice 가 없습니다 ({used}/{max})",
       r_no_mig_profile: "이 GPU 모델의 MIG 프로필이 없습니다",
-      r_mode_model: "{model} 은(는) {mode} 노드에 넣을 수 없습니다",
+      r_mode_model: "{model} 은(는) 쓸 수 있는 GPU 유형이 없습니다",
       r_unknown: "여기에는 놓을 수 없습니다",
       p_none: "캔버스에서 노드, GPU, VM 을 고르세요.",
       p_project: "프로젝트",
@@ -612,8 +764,11 @@
       f_project_name: "프로젝트 이름",
       f_user_name: "사용자 이름",
       f_hostname: "호스트 이름",
-      f_mode: "모드",
-      f_mode_hint: "노드를 만들 때 정합니다. 바꾸려면 노드를 지우고 다시 만드세요.",
+      f_mode: "기본 유형",
+      f_mode_hint: "새 GPU 가 쓰는 유형. GPU 마다 GPU 속성에서 바꿀 수 있습니다.",
+      f_gpu_mode: "유형",
+      f_gpu_mode_hint: "바꾸면 VM 은 남기고 새 유형에 맞게 고칩니다. 자리가 모자라면 넘치는 VM 은 지웁니다.",
+      mode_removed: "GPU {gpu} 유형을 {mode}(으)로 바꾸면서 VM {n}개를 지웠습니다: {names}",
       f_id: "ID",
       f_uuid: "UUID",
       f_host_ip: "호스트 IP",
@@ -639,6 +794,7 @@
       custom_profile: "{name} (직접 지정)",
       col_gi: "GI",
       col_profile: "프로필",
+      col_vgpu: "vGPU",
       col_vm: "VM",
       add_gpu: "GPU 추가",
       add_vm: "VM 추가",
@@ -915,12 +1071,7 @@
 
   function addGPU(h, modelName) {
     var n = node(h);
-    var m = modelOf(S.catalog, modelName);
-    var index = 0;
-    arr(n.gpus).forEach(function (g) { if (g && g.index >= index) index = g.index + 1; });
-    var g = { index: index, model_name: modelName, vms: [] };
-    if (n.mode === "VGPU") g.profile = profileCopy(arr(m && m.vgpu_profiles)[0]);
-    if (n.mode === "MIG") g.mig_instances = [];
+    var g = newGPU(S.topo, S.catalog, h, modelName);
     if (!n.gpus) n.gpus = [];
     n.gpus.push(g);
     S.sel = { kind: "gpu", h: h, g: n.gpus.length - 1 };
@@ -939,41 +1090,30 @@
 
   function addVM(h, g, verdict) {
     var n = node(h), gp = gpu(h, g);
-    var vm = { name: vmName(S.topo, n, gp), hypervisor: n.hostname, gpu_index: gp.index, mode: n.mode, mig_gpu_instance_id: -1 };
+    var vm = { name: vmName(S.topo, n, gp), hypervisor: n.hostname, gpu_index: gp.index, mode: gpuMode(n, gp), mig_gpu_instance_id: -1 };
     place(gp, verdict, vm);
     if (!gp.vms) gp.vms = [];
     gp.vms.push(vm);
     S.sel = { kind: "vm", h: h, g: g, v: gp.vms.length - 1 };
   }
 
-  // resetFlavor drops the flavor so Fill picks the one that matches the new GPU. Sizes that came from the old
-  // flavor go with it; sizes the user changed stay.
-  function resetFlavor(vm) {
-    var f = flavorByID(vm.flavor_id);
-    if (f && vm.vcpus === f.vcpus && vm.memory_mb === f.ram_mb && vm.disk_gb === f.disk_gb) {
-      vm.vcpus = 0;
-      vm.memory_mb = 0;
-      vm.disk_gb = 0;
-    }
-    vm.flavor_id = "";
-  }
-
   function moveVM(p, h, g, verdict) {
     var src = gpu(p.h, p.g), srcNode = node(p.h);
     var dst = gpu(h, g), dstNode = node(h);
+    var srcMode = gpuMode(srcNode, src), dstMode = gpuMode(dstNode, dst);
     var vm = src.vms.splice(p.v, 1)[0];
     var profName = function (x) { return x.profile ? x.profile.name : ""; };
-    if (srcNode.mode !== dstNode.mode || src.model_name !== dst.model_name ||
-        profName(src) !== profName(dst) || dstNode.mode === "MIG") {
-      resetFlavor(vm);
+    if (srcMode !== dstMode || src.model_name !== dst.model_name ||
+        profName(src) !== profName(dst) || dstMode === "MIG") {
+      resetFlavor(S.topo, vm);
     }
-    if ((srcNode.mode === "PASSTHROUGH") !== (dstNode.mode === "PASSTHROUGH")) {
+    if ((srcMode === "PASSTHROUGH") !== (dstMode === "PASSTHROUGH")) {
       vm.guest_driver_version = "";
       vm.vgpu_uuid = "";
     }
     vm.hypervisor = dstNode.hostname;
     vm.gpu_index = dst.index;
-    vm.mode = dstNode.mode;
+    vm.mode = dstMode;
     vm.mig_gpu_instance_id = -1;
     place(dst, verdict, vm);
     if (!dst.vms) dst.vms = [];
@@ -986,6 +1126,19 @@
     if (p.kind === "gpu") node(p.h).gpus.splice(p.g, 1);
     if (p.kind === "node") S.topo.hypervisors.splice(p.h, 1);
     S.sel = null;
+  }
+
+  // changeMode changes the type of GPU (h, g) and says which VMs it had to delete.
+  function changeMode(h, g, mode) {
+    var gp = gpu(h, g);
+    if (!gp) return;
+    var r = convertGPU(S.topo, S.catalog, h, g, mode);
+    if (!r.changed) return;
+    S.sel = { kind: "gpu", h: h, g: g };
+    changed();
+    if (r.removed.length) {
+      toast(tr("mode_removed", { gpu: gp.index, mode: modeLabel(mode), n: r.removed.length, names: r.removed.join(", ") }), "warn");
+    }
   }
 
   // ---- drag and drop ----
@@ -1209,6 +1362,7 @@
 
   function renderAll() {
     if (!S.root) return;
+    closeMenu(false);
     renderToolbar();
     renderPalette();
     renderMain();
@@ -1240,6 +1394,7 @@
     ["canvas", "json", "entities"].forEach(function (v) {
       var vb = btn(tr("view_" + v), "tp-view" + (S.view === v ? " tp-on" : ""), function () {
         if (S.view === v) return;
+        closeMenu(false);
         S.view = v;
         S.jsonEdited = false;
         S.jsonError = "";
@@ -1297,7 +1452,7 @@
     var ns = section("pal_nodes");
     MODES.forEach(function (m) {
       var it = el("div", "tp-pal-item tp-mode-" + m, tr("node_" + m),
-        { draggable: "true", "data-drag": "new-node", "data-mode": m, title: tr("node_" + m) });
+        { draggable: "true", "data-drag": "new-node", "data-mode": m, title: tr("node_title", { mode: modeLabel(m) }) });
       ns.appendChild(it);
     });
     pal.appendChild(ns);
@@ -1392,39 +1547,45 @@
     return c;
   }
 
-  function renderGPU(h, g, n, gp, mapped) {
+  // renderGPU draws a GPU. tagged puts its type in the head, for a node whose GPUs differ from its default type.
+  function renderGPU(h, g, n, gp, mapped, tagged) {
     var key = h + "/" + g;
+    var mode = gpuMode(n, gp);
+    var slices = maxSlices(S.catalog, gp);
     var cell = el("div", "tp-gpu" + (isSel("gpu", h, g) ? " tp-sel" : "") + (mapped.gpus[key] ? " tp-bad" : ""), null,
       { "data-drop": "gpu", "data-h": h, "data-g": g });
     var head = el("div", "tp-gpu-head", null, { draggable: "true", "data-drag": "gpu", "data-h": h, "data-g": g });
     head.appendChild(el("span", "tp-gpu-idx", "GPU " + gp.index));
+    if (tagged) head.appendChild(el("span", "tp-tag tp-mode-" + mode, modeLabel(mode)));
     head.appendChild(el("span", "tp-gpu-model", shortModel(gp.model_name)));
     var vms = arr(gp.vms);
-    if (n.mode === "VGPU") {
+    if (mode === "VGPU") {
       var max = gp.profile ? gp.profile.max_instances : 0;
       head.appendChild(el("span", "tp-gpu-meta", (gp.profile ? shortModel(gp.profile.name) : "-") + " " + vms.length + "/" + max));
-    } else if (n.mode === "MIG") {
-      head.appendChild(el("span", "tp-gpu-meta", usedSlices(gp) + "/" + MAX_SLICES));
+    } else if (mode === "MIG") {
+      head.appendChild(el("span", "tp-gpu-meta", usedSlices(gp) + "/" + slices));
     }
     clickable(head, { kind: "gpu", h: h, g: g });
     cell.appendChild(head);
 
     var body = el("div", "tp-gpu-body");
-    if (n.mode === "MIG") {
+    if (mode === "MIG") {
       var bar = el("div", "tp-mig");
+      bar.style.setProperty("--tp-slices", String(slices));
       var byGI = {};
       vms.forEach(function (vm, v) { if (vm) byGI[vm.mig_gpu_instance_id] = { vm: vm, v: v }; });
       arr(gp.mig_instances).forEach(function (mi) {
         if (!mi) return;
         var slot = el("div", "tp-slot", null, { "data-drop": "slot", "data-h": h, "data-g": g, "data-gi": mi.gpu_instance_id });
-        slot.style.gridColumn = "span " + Math.max(1, Math.min(MAX_SLICES, mi.slices || 1));
+        slot.style.gridColumn = "span " + Math.max(1, Math.min(slices, mi.slices || 1));
         slot.appendChild(el("span", "tp-slot-label", mi.profile + " #" + mi.gpu_instance_id));
+        if (mi.vgpu_profile && mi.vgpu_profile.name) slot.title = mi.vgpu_profile.name;
         var hit = byGI[mi.gpu_instance_id];
         if (hit) slot.appendChild(vmChip(h, g, hit.v, hit.vm, mapped, true));
         else slot.appendChild(el("span", "tp-seat", tr("seat_empty")));
         bar.appendChild(slot);
       });
-      var left = MAX_SLICES - usedSlices(gp);
+      var left = slices - usedSlices(gp);
       if (left > 0) {
         var free = el("div", "tp-slot tp-free", tr("mig_free", { n: left }), { "data-drop": "free", "data-h": h, "data-g": g });
         free.style.gridColumn = "span " + left;
@@ -1439,7 +1600,7 @@
       });
     } else {
       var seats = el("div", "tp-seats");
-      var total = n.mode === "VGPU" ? Math.max(gp.profile ? gp.profile.max_instances : 0, vms.length) : Math.max(1, vms.length);
+      var total = mode === "VGPU" ? Math.max(gp.profile ? gp.profile.max_instances : 0, vms.length) : Math.max(1, vms.length);
       for (var i = 0; i < total; i++) {
         if (vms[i]) seats.appendChild(vmChip(h, g, i, vms[i], mapped));
         else seats.appendChild(el("div", "tp-seat", tr("seat_empty")));
@@ -1460,17 +1621,19 @@
         canvas.appendChild(el("div", "tp-node tp-bad", "null"));
         return;
       }
-      var card = el("div", "tp-node tp-mode-" + n.mode + (isSel("node", h) ? " tp-sel" : "") + (mapped.nodes[h] ? " tp-bad" : ""),
-        null, { "data-drop": "node", "data-h": h });
+      var modes = nodeModes(n);
+      var mixed = modes.length > 1;
+      var card = el("div", "tp-node tp-mode-" + (mixed ? "MIXED" : modes[0] || n.mode) + (isSel("node", h) ? " tp-sel" : "") +
+        (mapped.nodes[h] ? " tp-bad" : ""), null, { "data-drop": "node", "data-h": h });
       var head = el("div", "tp-node-head", null, { draggable: "true", "data-drag": "node", "data-h": h });
-      head.appendChild(el("span", "tp-tag tp-mode-" + n.mode, modeLabel(n.mode)));
+      modes.forEach(function (m) { head.appendChild(el("span", "tp-tag tp-mode-" + m, modeLabel(m))); });
       head.appendChild(el("span", "tp-node-name", n.hostname || "?"));
       head.appendChild(el("span", "tp-node-meta", n.host_ip || ""));
       clickable(head, { kind: "node", h: h });
       card.appendChild(head);
       var gpus = el("div", "tp-gpus");
       arr(n.gpus).forEach(function (gp, g) {
-        if (gp) gpus.appendChild(renderGPU(h, g, n, gp, mapped));
+        if (gp) gpus.appendChild(renderGPU(h, g, n, gp, mapped, mixed || gpuMode(n, gp) !== n.mode));
       });
       if (!arr(n.gpus).length) gpus.appendChild(el("p", "tp-hint", tr("node_empty")));
       card.appendChild(gpus);
@@ -1680,7 +1843,7 @@
     });
     entityField(box, n.hostname, n);
 
-    var models = arr(S.catalog && S.catalog.gpu_models).filter(function (m) { return arr(m.modes).indexOf(n.mode) >= 0; });
+    var models = arr(S.catalog && S.catalog.gpu_models);
     if (models.length) {
       var row = el("div", "tp-actions");
       var sel = el("select", null, null, { "aria-label": tr("f_model") });
@@ -1705,8 +1868,14 @@
       set: function (v) { gp.bus_id = v.trim(); gp.host_bdf = ""; } });
     field(box, { key: "memory_mib", label: tr("f_memory_mib"), ro: true, placeholder: tr("auto"), get: function () { return auto(gp.memory_mib); } });
     var m = modelOf(S.catalog, gp.model_name);
+    var mode = gpuMode(n, gp);
+    var modes = arr(m && m.modes).slice();
+    if (modes.indexOf(mode) < 0) modes.unshift(mode);
+    var ms = selectField(box, "gpu_mode", tr("f_gpu_mode"),
+      modes.map(function (x) { return { value: x, label: modeLabel(x) }; }), mode, function (val) { changeMode(h, g, val); });
+    ms.parentNode.appendChild(el("p", "hint", tr("f_gpu_mode_hint")));
 
-    if (n.mode === "VGPU") {
+    if (mode === "VGPU") {
       var profs = arr(m && m.vgpu_profiles);
       var cur = gp.profile ? gp.profile.name : "";
       var opts = profs.map(function (p) { return { value: p.name, label: shortModel(p.name) + " (" + p.framebuffer_mb + " MB, " + p.max_instances + ")" }; });
@@ -1716,7 +1885,7 @@
         var p = profs.filter(function (x) { return x.name === val; })[0];
         if (!p) return;
         gp.profile = profileCopy(p);
-        arr(gp.vms).forEach(function (v) { if (v) resetFlavor(v); });
+        arr(gp.vms).forEach(function (v) { if (v) resetFlavor(S.topo, v); });
         changed();
       });
       if (gp.profile) {
@@ -1725,9 +1894,9 @@
       }
     }
 
-    if (n.mode === "MIG") {
-      box.appendChild(el("h4", "tp-sub", tr("f_mig_instances", { used: usedSlices(gp), max: MAX_SLICES })));
-      var table = el("table", "grid tp-table");
+    if (mode === "MIG") {
+      box.appendChild(el("h4", "tp-sub", tr("f_mig_instances", { used: usedSlices(gp), max: maxSlices(S.catalog, gp) })));
+      var table = el("table", "grid tp-table tp-mig-table");
       var thr = el("tr");
       ["col_gi", "col_profile", "col_vm", ""].forEach(function (k) { thr.appendChild(el("th", null, k ? tr(k) : "")); });
       var thead = el("thead");
@@ -1737,11 +1906,13 @@
       arr(gp.mig_instances).forEach(function (mi, i) {
         if (!mi) return;
         var user = arr(gp.vms).filter(function (v) { return v && v.mig_gpu_instance_id === mi.gpu_instance_id; })[0];
-        var row = el("tr");
+        var row = el("tr", "tp-mig-row");
         row.appendChild(el("td", null, String(mi.gpu_instance_id)));
-        row.appendChild(el("td", null, mi.profile));
-        row.appendChild(el("td", null, user ? user.name : "-"));
-        var td = el("td");
+        row.appendChild(el("td", "tp-nowrap", mi.profile));
+        var prefix = "emu-" + shortName(n.hostname) + "-";
+        var vmLabel = user ? (user.name.indexOf(prefix) === 0 && user.name.length > prefix.length ? user.name.slice(prefix.length) : user.name) : "-";
+        row.appendChild(el("td", "tp-nowrap", vmLabel, { title: user ? user.name : null }));
+        var td = el("td", "tp-nowrap");
         var rb = btn(tr("remove"), "btn-small", function () {
           gp.mig_instances.splice(i, 1);
           changed();
@@ -1753,6 +1924,7 @@
         td.appendChild(rb);
         row.appendChild(td);
         tb.appendChild(row);
+        tb.appendChild(instanceVGPURow(gp, mi));
       });
       table.appendChild(tb);
       box.appendChild(table);
@@ -1787,6 +1959,46 @@
     box.appendChild(actions);
   }
 
+  // vgpuTail is the last word of a vGPU type name, the part that differs between the types of one model:
+  // NVIDIA RTX Pro 6000 Blackwell DC-2-48Q -> DC-2-48Q.
+  function vgpuTail(name) {
+    var parts = String(name || "").trim().split(/\s+/);
+    return parts[parts.length - 1] || "-";
+  }
+
+  // instanceVGPURow shows the vGPU type of a MIG instance on a line of its own below the instance, as a choice when
+  // its kind offers more than one.
+  function instanceVGPURow(gp, mi) {
+    var row = el("tr", "tp-mig-vgpu");
+    var cell = el("td", null, null, { colspan: "4" });
+    var line = el("div", "tp-mig-vgpu-line");
+    row.appendChild(cell);
+    cell.appendChild(line);
+    line.appendChild(el("span", "tp-mig-vgpu-label", tr("col_vgpu")));
+    var value = el("span", "tp-mig-vgpu-value");
+    line.appendChild(value);
+    var cur = mi.vgpu_profile ? mi.vgpu_profile.name : "";
+    var list = migVGPUs(migKind(S.catalog, gp, mi));
+    var known = list.some(function (p) { return p && p.name === cur; });
+    if (list.length < 2) {
+      value.textContent = cur ? (known || !list.length ? vgpuTail(cur) : tr("custom_profile", { name: vgpuTail(cur) })) : "-";
+      value.title = cur;
+      return row;
+    }
+    var sel = el("select", null, null, { "aria-label": tr("col_vgpu") + " " + mi.profile + " #" + mi.gpu_instance_id,
+      "data-key": "mig_vgpu_" + mi.gpu_instance_id });
+    if (!cur) sel.appendChild(el("option", null, "-", { value: "" }));
+    else if (!known) sel.appendChild(el("option", null, tr("custom_profile", { name: vgpuTail(cur) }), { value: cur, title: cur }));
+    list.forEach(function (p) { sel.appendChild(el("option", null, vgpuTail(p.name), { value: p.name, title: p.name })); });
+    sel.value = cur;
+    sel.title = cur;
+    sel.addEventListener("change", function () {
+      if (setInstanceVGPU(S.catalog, gp, mi.gpu_instance_id, sel.value)) changed();
+    });
+    value.appendChild(sel);
+    return row;
+  }
+
   function renderVMProps(box, s, n, gp, vm) {
     box.appendChild(el("h3", "tp-sec-title", tr("p_vm")));
     field(box, { key: "name", label: tr("f_name"), get: function () { return vm.name; }, set: function (v) { renameVM(vm, v, S.fromServer.has(vm)); } });
@@ -1798,7 +2010,7 @@
     [["vcpus", "f_vcpus"], ["memory_mb", "f_memory_mb"], ["disk_gb", "f_disk_gb"]].forEach(function (k) {
       field(box, { key: k[0], label: tr(k[1]), type: "number", placeholder: tr("auto"), get: function () { return auto(vm[k[0]]); }, set: function (v) { vm[k[0]] = v; } });
     });
-    if (n.mode === "MIG") {
+    if (gpuMode(n, gp) === "MIG") {
       var taken = {};
       arr(gp.vms).forEach(function (v) { if (v && v !== vm) taken[v.mig_gpu_instance_id] = true; });
       var opts = arr(gp.mig_instances).filter(function (mi) { return mi && !taken[mi.gpu_instance_id]; })
@@ -1808,7 +2020,7 @@
       }
       selectField(box, "mig", tr("f_mig_instance"), opts, String(vm.mig_gpu_instance_id), function (val) {
         vm.mig_gpu_instance_id = +val;
-        resetFlavor(vm);
+        resetFlavor(S.topo, vm);
         changed();
       });
     }
@@ -1816,6 +2028,270 @@
     var actions = el("div", "tp-actions");
     actions.appendChild(btn(tr("delete_vm"), "btn-small tp-danger", function () { remove({ kind: "vm", h: s.h, g: s.g, v: s.v }); changed(); }));
     box.appendChild(actions);
+  }
+
+  // ---- context menu and Delete key ----
+
+  // menu is the open context menu: { el, items (the buttons), byKey (opened from the keyboard) }.
+  var menu = null;
+  // kbMenuAt is when the keyboard last opened the menu. The ContextMenu key also sends a contextmenu event.
+  var kbMenuAt = 0;
+  var MENU_GAP = 8;
+
+  function selValid(s) {
+    if (!s || !node(s.h)) return false;
+    if (s.kind === "node") return true;
+    var gp = gpu(s.h, s.g);
+    if (!gp) return false;
+    return s.kind === "gpu" || (s.kind === "vm" && !!arr(gp.vms)[s.v]);
+  }
+
+  // selAt answers what a right click on n is about: the VM chip, else the GPU, else the node card.
+  function selAt(n) {
+    if (!n || !n.closest || !S.root.contains(n)) return null;
+    var c = n.closest(".tp-vm");
+    if (c && c.dataset.v !== undefined) return { kind: "vm", h: +c.dataset.h, g: +c.dataset.g, v: +c.dataset.v };
+    c = n.closest(".tp-gpu");
+    if (c && c.dataset.g !== undefined) return { kind: "gpu", h: +c.dataset.h, g: +c.dataset.g };
+    c = n.closest(".tp-node");
+    if (c && c.dataset.h !== undefined) return { kind: "node", h: +c.dataset.h };
+    return null;
+  }
+
+  function selElement(s) {
+    if (!s || !S.els.main) return null;
+    if (s.kind === "node") return S.els.main.querySelector('.tp-node-head[data-h="' + s.h + '"]');
+    if (s.kind === "gpu") return S.els.main.querySelector('.tp-gpu-head[data-h="' + s.h + '"][data-g="' + s.g + '"]');
+    return S.els.main.querySelector('.tp-vm[data-h="' + s.h + '"][data-g="' + s.g + '"][data-v="' + s.v + '"]');
+  }
+
+  function focusSel() {
+    var n = selElement(S.sel);
+    if (n) n.focus({ preventScroll: true });
+  }
+
+  // menuItems lists the entries of the menu for s. An entry is a label (text only), a separator (sep) or an action
+  // (run) that may be disabled with a reason in note.
+  function menuItems(s) {
+    var items = [];
+    var n = node(s.h);
+    if (s.kind === "node") {
+      items.push({ label: n.hostname || "?", title: true });
+      items.push({ label: tr("add_gpu") });
+      arr(S.catalog && S.catalog.gpu_models).forEach(function (m) {
+        var v = acceptGPU(S.topo, S.catalog, s.h, m.name);
+        items.push({
+          text: shortModel(m.name), indent: true, tip: m.name,
+          note: v.ok ? (v.mode !== n.mode ? modeLabel(v.mode) : "") : tr("r_" + v.reason, v.params),
+          disabled: !v.ok,
+          run: function () { addGPU(s.h, m.name); changed(); }
+        });
+      });
+      items.push({ sep: true });
+      items.push({ text: tr("delete_node"), danger: true, run: function () { remove({ kind: "node", h: s.h }); changed(); } });
+      return items;
+    }
+    var gp = gpu(s.h, s.g);
+    if (s.kind === "gpu") {
+      var mode = gpuMode(n, gp);
+      items.push({ label: "GPU " + gp.index + " - " + shortModel(gp.model_name), title: true });
+      var verdict = acceptVM(S.topo, S.catalog, { h: s.h, g: s.g }, { kind: "new-vm" });
+      var reason = verdict.ok ? "" : tr("r_" + verdict.reason, verdict.params);
+      items.push({
+        text: tr("add_vm"), disabled: !verdict.ok, note: reason, tip: reason,
+        run: function () { addVM(s.h, s.g, verdict); changed(); }
+      });
+      items.push({ sep: true });
+      items.push({ label: tr("f_gpu_mode") });
+      var m = modelOf(S.catalog, gp.model_name);
+      var modes = arr(m && m.modes).slice();
+      if (modes.indexOf(mode) < 0) modes.unshift(mode);
+      modes.forEach(function (x) {
+        items.push({
+          text: modeLabel(x), indent: true, radio: true, checked: x === mode, mode: x,
+          run: function () { if (x !== mode) changeMode(s.h, s.g, x); }
+        });
+      });
+      items.push({ sep: true });
+      items.push({ text: tr("delete_gpu"), danger: true, run: function () { remove({ kind: "gpu", h: s.h, g: s.g }); changed(); } });
+      return items;
+    }
+    var vm = arr(gp.vms)[s.v];
+    items.push({ label: vm.name || "?", title: true });
+    items.push({ text: tr("delete_vm"), danger: true, run: function () { remove({ kind: "vm", h: s.h, g: s.g, v: s.v }); changed(); } });
+    return items;
+  }
+
+  // placeMenu opens the menu at the pointer and keeps it in the viewport: left of the pointer past the right edge,
+  // above it past the bottom edge.
+  function placeMenu(box, x, y) {
+    box.style.left = "0px";
+    box.style.top = "0px";
+    var w = box.offsetWidth, h = box.offsetHeight;
+    var vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+    var left = x, top = y;
+    if (left + w > vw - MENU_GAP) left = x - w;
+    if (top + h > vh - MENU_GAP) top = y - h;
+    left = Math.max(MENU_GAP, Math.min(left, vw - MENU_GAP - w));
+    top = Math.max(MENU_GAP, Math.min(top, vh - MENU_GAP - h));
+    box.style.left = left + "px";
+    box.style.top = top + "px";
+  }
+
+  function closeMenu(refocus) {
+    if (!menu) return;
+    menu.el.remove();
+    menu = null;
+    if (refocus) focusSel();
+  }
+
+  function runMenu(it) {
+    var byKey = menu && menu.byKey;
+    closeMenu(false);
+    it.run();
+    if (byKey) focusSel();
+  }
+
+  function menuKey(e) {
+    var items = menu ? menu.items : [];
+    if (!items.length) return;
+    var i = items.indexOf(document.activeElement);
+    switch (e.key) {
+      case "ArrowDown": i = (i + 1) % items.length; break;
+      case "ArrowUp": i = i <= 0 ? items.length - 1 : i - 1; break;
+      case "Home": i = 0; break;
+      case "End": i = items.length - 1; break;
+      case "Escape":
+      case "Tab":
+        e.preventDefault();
+        e.stopPropagation();
+        closeMenu(true);
+        return;
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        e.stopPropagation();
+        if (items[i]) items[i].click();
+        return;
+      default:
+        return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    items[i].focus({ preventScroll: true });
+  }
+
+  function openMenu(s, x, y, byKey) {
+    closeMenu(false);
+    if (!selValid(s)) return;
+    select(s);
+    var list = menuItems(s);
+    var title = list.filter(function (it) { return it.title; })[0];
+    var box = el("div", "tp-menu", null, { role: "menu", "aria-label": title ? title.label : "" });
+    var buttons = [];
+    list.forEach(function (it) {
+      if (it.sep) {
+        box.appendChild(el("div", "tp-menu-sep", null, { role: "separator" }));
+        return;
+      }
+      if (!it.run) {
+        box.appendChild(el("div", "tp-menu-label" + (it.title ? " tp-menu-title" : ""), it.label, { role: "presentation" }));
+        return;
+      }
+      var b = el("button", "tp-menu-item" + (it.indent ? " tp-menu-indent" : "") + (it.danger ? " tp-menu-danger" : ""), null, {
+        type: "button", tabindex: "-1", role: it.radio ? "menuitemradio" : "menuitem", title: it.tip || null
+      });
+      if (it.radio) {
+        b.setAttribute("aria-checked", String(!!it.checked));
+        b.appendChild(el("span", "tp-menu-dot tp-mode-" + it.mode, null, { "aria-hidden": "true" }));
+      }
+      if (it.disabled) b.setAttribute("aria-disabled", "true");
+      b.appendChild(el("span", "tp-menu-text", it.text));
+      if (it.note) b.appendChild(el("small", "tp-menu-note", it.note));
+      b.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!it.disabled) runMenu(it);
+      });
+      b.addEventListener("pointermove", function () {
+        if (document.activeElement !== b) b.focus({ preventScroll: true });
+      });
+      buttons.push(b);
+      box.appendChild(b);
+    });
+    box.addEventListener("keydown", menuKey);
+    box.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+    // Outside the glass panel, as the drag hint: its backdrop-filter would make it the containing block.
+    document.body.appendChild(box);
+    menu = { el: box, items: buttons, byKey: byKey };
+    placeMenu(box, x, y);
+    var first = buttons.filter(function (b) { return b.getAttribute("aria-disabled") !== "true"; })[0] || buttons[0];
+    if (first) first.focus({ preventScroll: true });
+  }
+
+  function textEntry(n) {
+    return !!n && (n.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName));
+  }
+
+  // visible tells whether the editor is on screen: app.js hides the Topology tab with the hidden attribute.
+  function visible() {
+    return !!S.root && S.root.getClientRects().length > 0;
+  }
+
+  function bindMenu(rootEl) {
+    document.addEventListener("contextmenu", function (e) {
+      if (!rootEl.contains(e.target)) return;
+      if (Date.now() - kbMenuAt < 500) {
+        e.preventDefault();
+        return;
+      }
+      var s = S.view === "canvas" && S.topo ? selAt(e.target) : null;
+      if (!s) {
+        closeMenu(false);
+        return;
+      }
+      e.preventDefault();
+      openMenu(s, e.clientX, e.clientY, false);
+    });
+    rootEl.addEventListener("keydown", function (e) {
+      if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
+      var t = e.target;
+      if (!t.matches || !t.matches(".tp-node-head, .tp-gpu-head, .tp-vm")) return;
+      var s = selAt(t);
+      if (!s) return;
+      e.preventDefault();
+      kbMenuAt = Date.now();
+      var r = t.getBoundingClientRect();
+      openMenu(s, r.left, r.bottom, true);
+    });
+    document.addEventListener("pointerdown", function (e) {
+      if (menu && !menu.el.contains(e.target)) closeMenu(false);
+    }, true);
+    // A scroll of the page or of a box around the canvas moves what the menu points at. Other boxes do not.
+    document.addEventListener("scroll", function (e) {
+      if (!menu) return;
+      var t = e.target;
+      if (t === document || (t.contains && t.contains(rootEl))) closeMenu(false);
+    }, true);
+    window.addEventListener("resize", function () { closeMenu(false); });
+    document.addEventListener("keydown", function (e) {
+      if (menu) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeMenu(true);
+        }
+        return;
+      }
+      if (e.key !== "Delete" || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (!visible() || !S.topo || S.view !== "canvas" || S.drag) return;
+      var ae = document.activeElement;
+      if (textEntry(ae) || (ae && ae.closest && ae.closest("dialog"))) return;
+      var s = S.sel;
+      if (!selValid(s)) return;
+      e.preventDefault();
+      remove(s);
+      changed();
+    });
   }
 
   // ---- mount ----
@@ -1870,6 +2346,7 @@
     // Outside the glass panel: its backdrop-filter would make it the containing block of this fixed element.
     document.body.appendChild(S.els.hint);
     bindDrag(rootEl);
+    bindMenu(rootEl);
     var g = gm();
     if (g && g.onLangChange) g.onLangChange(function () {
       relabelPanes();

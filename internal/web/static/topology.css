@@ -3,17 +3,19 @@
 .app:has(#tab-topology:not([hidden])) { max-width: 100rem; }
 
 /* GPU mode colors: blue, rose and amber sit apart from the violet accent,
-   which marks selection, and from the teal that marks VMs. */
-.tp {
+   which marks selection, and from the teal that marks VMs. The context menu sits outside .tp, so it gets them too. */
+.tp, .tp-menu {
   --tp-vgpu: #3566d6;
   --tp-mig: #c03d86;
   --tp-pt: #b4630f;
   --tp-tag-text: #ffffff;
+}
+.tp {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
 }
-[data-theme="dark"] .tp {
+[data-theme="dark"] .tp, [data-theme="dark"] .tp-menu {
   --tp-vgpu: #85a8f7;
   --tp-mig: #f08cc4;
   --tp-pt: #f2b067;
@@ -151,6 +153,8 @@
 .tp-node.tp-mode-VGPU { border-top-color: var(--tp-vgpu); }
 .tp-node.tp-mode-MIG { border-top-color: var(--tp-mig); }
 .tp-node.tp-mode-PASSTHROUGH { border-top-color: var(--tp-pt); }
+/* A node whose GPUs run in more than one type: neutral, the tags in the head name the types. */
+.tp-node.tp-mode-MIXED { border-top-color: var(--text-dim); }
 .tp-node-head, .tp-gpu-head {
   display: flex;
   align-items: center;
@@ -199,8 +203,8 @@
   white-space: nowrap;
 }
 
-/* MIG bar: seven columns, one per compute slice */
-.tp-mig { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 0.2rem; }
+/* MIG bar: one column per compute slice of the GPU's model (--tp-slices, set by topology.js) */
+.tp-mig { display: grid; grid-template-columns: repeat(var(--tp-slices, 7), minmax(0, 1fr)); gap: 0.2rem; }
 .tp-slot {
   border: 1px solid var(--tp-mig);
   border-radius: 8px;
@@ -274,6 +278,74 @@
   box-shadow: 0 4px 14px var(--accent-cast);
 }
 
+/* context menu: above the drag hint (.tp-drag-hint, z-index 70) */
+.tp-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 12rem;
+  max-width: min(22rem, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 0.3rem;
+  background: var(--bg-surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  box-shadow: 0 8px 24px var(--shadow);
+  font-size: 13px;
+}
+.tp-menu-label { padding: 0.3rem 0.6rem 0.1rem; font-size: 11px; color: var(--text-dim); }
+.tp-menu-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tp-menu-sep { height: 1px; margin: 0.25rem 0.3rem; background: var(--border-soft); }
+.tp-menu-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.35rem 0.6rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.tp-menu-item:hover, .tp-menu-item:focus { background: var(--bg-hover); outline: none; }
+.tp-menu-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tp-menu-item[aria-disabled="true"] { color: var(--text-disabled); cursor: not-allowed; }
+.tp-menu-indent { padding-left: 1.4rem; }
+.tp-menu-danger { color: var(--danger); }
+.tp-menu-danger:hover, .tp-menu-danger:focus { background: var(--danger-bg-soft); }
+.tp-menu-note { margin-left: auto; padding-left: 0.5rem; font-size: 11px; color: var(--text-dim); text-align: right; }
+.tp-menu-item[aria-disabled="true"] .tp-menu-note { color: var(--danger); }
+.tp-menu-dot {
+  flex: none;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  border: 2px solid var(--text-dim);
+  box-sizing: border-box;
+  align-self: center;
+}
+.tp-menu-dot.tp-mode-VGPU { border-color: var(--tp-vgpu); }
+.tp-menu-dot.tp-mode-MIG { border-color: var(--tp-mig); }
+.tp-menu-dot.tp-mode-PASSTHROUGH { border-color: var(--tp-pt); }
+.tp-menu-item[aria-checked="true"] { font-weight: 700; }
+.tp-menu-item[aria-checked="true"] .tp-menu-dot.tp-mode-VGPU { background: var(--tp-vgpu); }
+.tp-menu-item[aria-checked="true"] .tp-menu-dot.tp-mode-MIG { background: var(--tp-mig); }
+.tp-menu-item[aria-checked="true"] .tp-menu-dot.tp-mode-PASSTHROUGH { background: var(--tp-pt); }
+
 /* properties */
 .tp-field { margin-bottom: 0.55rem; }
 .tp-field input[readonly] { color: var(--text-dim); background: var(--bg-sunken); }
@@ -281,6 +353,24 @@
 .tp-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin: 0.5rem 0; }
 .tp-actions select { flex: 1 1 8rem; min-width: 0; }
 .tp-table { width: 100%; font-size: 12px; }
+.tp-props .tp-table th, .tp-props .tp-table td { padding: 0.35rem 0.3rem; }
+.tp-nowrap { white-space: nowrap; }
+/* MIG instances: each instance is a row and the line with its vGPU type below it, banded as one. */
+.tp-mig-table tbody tr { background: transparent; }
+.tp-mig-table tbody tr:hover { background: transparent; }
+.tp-mig-table .tp-mig-row td { border-bottom: 0; padding-bottom: 0.1rem; }
+.tp-mig-table .tp-mig-vgpu td { padding-top: 0.1rem; }
+.tp-mig-table tbody tr.tp-mig-vgpu:last-child td { border-bottom: 0; }
+.tp-mig-vgpu-line { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.tp-mig-vgpu-label { flex: none; color: var(--text-dim); }
+.tp-mig-vgpu-value { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-mig-vgpu select { width: 100%; min-width: 0; padding: 0.2rem 0.4rem; font-size: 12px; }
+/* Phone width: style.css stacks the cells of a .grid table; keep an instance on one line above its vGPU line. */
+@media (max-width: 640px) {
+  .tp-mig-table .tp-mig-row { display: flex; align-items: center; gap: 0.75rem; border-bottom: 0; padding-bottom: 0; }
+  .tp-mig-table .tp-mig-row td { width: auto; padding: 0.2rem 0; }
+  .tp-mig-table .tp-mig-row td:last-child { margin-left: auto; }
+}
 .tp-muted { color: var(--text-dim); }
 .tp-custom { color: var(--accent); font-weight: 600; }
 
