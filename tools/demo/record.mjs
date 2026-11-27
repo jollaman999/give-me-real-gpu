@@ -40,6 +40,8 @@ const CAPTIONS = {
     sinks_rules: "Tag rules: add a fixed key=value to every line of a sink",
     sinks_keys: "Or pick a tag the sink already sends, then rename or drop it",
     topo_drag: "Topology: drag a VM onto a GPU. A GPU with no room refuses it",
+    topo_type: "Right-click a GPU to add a VM or change its type. VMs that do not fit are deleted",
+    topo_delete: "Right-click a VM to delete it. The Delete key removes the selected one too",
     topo_save: "Save: the fake OpenStack API serves the new topology right away"
   },
   ko: {
@@ -49,6 +51,8 @@ const CAPTIONS = {
     sinks_rules: "Tag 규칙: sink 의 모든 줄에 고정 key=value 를 붙입니다",
     sinks_keys: "이미 보내는 tag 를 골라 이름을 바꾸거나 뺄 수도 있습니다",
     topo_drag: "토폴로지: VM 을 GPU 에 끌어다 놓습니다. 자리가 없는 GPU 는 거부합니다",
+    topo_type: "GPU 를 우클릭해 VM 을 추가하거나 유형을 바꿉니다. 자리가 모자라면 넘치는 VM 은 지웁니다",
+    topo_delete: "VM 을 우클릭해 지웁니다. 선택한 것은 Delete 키로도 지웁니다",
     topo_save: "저장: 가짜 OpenStack API 가 새 토폴로지를 바로 내보냅니다"
   }
 };
@@ -394,6 +398,18 @@ async function press(pt, real = true) {
   await cursor(pt.x, pt.y);
 }
 
+// rightClick shows the click ring at pt and sends the right mouse button, which opens the page's context menu.
+async function rightClick(pt) {
+  await moveTo(pt);
+  await evaluate("window.__demo.press(true)");
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: pt.x, y: pt.y, button: "right", clickCount: 1 });
+  await sleep(70);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: pt.x, y: pt.y, button: "right", clickCount: 1 });
+  await sleep(180);
+  await evaluate("window.__demo.press(false)");
+  await cursor(pt.x, pt.y);
+}
+
 // pick keeps the element that expr finds in the page under name. It fails with what when there is none.
 async function pick(name, expr, what) {
   if (!(await evaluate(`window.__demo.set(${JSON.stringify(name)}, ${expr})`))) throw new Error("not on the page: " + what);
@@ -408,6 +424,13 @@ async function show(name, innerFirst = false) {
       await sleep(60);
     }
   }
+  const b = await evaluate(`window.__demo.box(${JSON.stringify(name)})`);
+  if (!b) throw new Error(name + " is not on the screen");
+  return b;
+}
+
+// at returns the center of the element under name without scrolling: a scroll closes the context menu.
+async function at(name) {
   const b = await evaluate(`window.__demo.box(${JSON.stringify(name)})`);
   if (!b) throw new Error(name + " is not on the screen");
   return b;
@@ -510,7 +533,7 @@ async function sceneStatus() {
   await pick("v", 'document.getElementById("os-region")', "the Region value");
   await moveTo(await show("v"), 450);
   await waitFor("the sink status rows", 'document.querySelectorAll("#status-sinks tbody tr").length >= 3 && [...document.querySelectorAll("#status-sinks tbody tr")].pop().offsetHeight > 0', 10000);
-  await pick("v", '[...document.querySelectorAll("#status-sinks tbody tr")].pop()', "the sink table");
+  await pick("v", 'document.querySelector("#status-sinks tbody")', "the sink table");
   await moveTo(await show("v"), 500);
   await hold(1600);
 }
@@ -605,9 +628,11 @@ async function sceneSinks() {
   await closeDialog();
 }
 
-// Topology: a new VM from the palette goes onto a GPU with room, the same VM dragged onto a full GPU is refused, then
-// Save. The page scrolls back to the top before the refused drag so the full GPU and the new VM are both in view;
-// the refusal note stays for a moment after the release.
+// Topology: a new VM from the palette goes onto a GPU with room, the same VM dragged onto a full GPU is refused, a GPU
+// with a few VMs is changed to passthrough from its context menu (the node then carries two type tags and a toast
+// names the VMs that did not fit), a VM is deleted from its context menu, then Save. The page scrolls back to the top
+// before the refused drag so the full GPU and the new VM are both in view; the refusal note stays for a moment after
+// the release.
 async function dragItem(item, target, drop, innerFirst) {
   const from = await show(item, innerFirst);
   const to = await show(target);
@@ -644,6 +669,42 @@ async function sceneTopology() {
   await pick("full", 'window.__demo.gpuFor("chip", false)', "a GPU that refuses the VM");
   if (await dragItem("chip", "full", false)) throw new Error("the full GPU took the VM");
   await hold(400);
+
+  await caption("topo_type");
+  const gpuCell = '[...document.querySelectorAll(".tp-gpu")].find((c) => { const n = c.querySelectorAll(".tp-vm").length; return n >= 2 && n <= 3; })';
+  await pick("ghead", `${gpuCell}.querySelector(".tp-gpu-head")`, "a GPU with two or three VMs");
+  const gpuAt = await evaluate(`(() => { const c = ${gpuCell}; return { h: c.dataset.h, g: c.dataset.g }; })()`);
+  const ghead = await show("ghead");
+  await rightClick({ x: Math.round(ghead.x - ghead.w / 4), y: ghead.y });
+  await waitFor("the GPU menu", 'document.querySelector(".tp-menu") !== null', 3000);
+  await hold(900);
+  await pick("pt", '[...document.querySelectorAll(".tp-menu [role=menuitemradio][aria-checked=false]")].find((b) => b.querySelector(".tp-menu-dot.tp-mode-PASSTHROUGH"))', "Passthrough in the GPU menu");
+  const pt = await at("pt");
+  await moveTo(pt, 420);
+  await hold(600);
+  await press(pt);
+  await waitFor("the toast of the deleted VMs", 'document.querySelector("#toast.toast-warn:not([hidden])") !== null', 3000);
+  await pick("tag", `document.querySelector('.tp-gpu-head[data-h="${gpuAt.h}"][data-g="${gpuAt.g}"] .tp-tag.tp-mode-PASSTHROUGH')`, "the Passthrough tag of the GPU");
+  await moveTo(await show("tag"), 420);
+  await hold(500);
+  await pick("tag", `document.querySelector('.tp-node-head[data-h="${gpuAt.h}"] .tp-tag.tp-mode-PASSTHROUGH')`, "the Passthrough tag of the node");
+  await moveTo(await show("tag"), 520);
+  await hold(1100);
+
+  await caption("topo_delete");
+  await pick("victim", '[...[...document.querySelectorAll(".tp-gpu")].find((c) => c.querySelectorAll(".tp-vm").length >= 4).querySelectorAll(".tp-vm")].pop()', "a VM on a GPU with four or more VMs");
+  const vms = await evaluate(count);
+  const victim = await show("victim");
+  await rightClick(victim);
+  await waitFor("the VM menu", 'document.querySelector(".tp-menu") !== null', 3000);
+  await hold(700);
+  await pick("del", 'document.querySelector(".tp-menu .tp-menu-danger")', "Delete VM in the VM menu");
+  const del = await at("del");
+  await moveTo(del, 380);
+  await hold(500);
+  await press(del);
+  await waitFor("the VM to go", `${count} === ${vms - 1}`, 3000);
+  await hold(1000);
 
   await caption("topo_save");
   await pick("save", 'document.querySelector(".tp-toolbar .btn-primary")', "the topology Save button");

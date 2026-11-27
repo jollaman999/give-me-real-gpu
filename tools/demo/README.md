@@ -21,6 +21,8 @@ above open dialogs, and it is in the page language.
 | | Edit on site-b, a fixed tag `env = demo` is added | Tag rules: add a fixed key=value to every line of a sink | Tag 규칙: sink 의 모든 줄에 고정 key=value 를 붙입니다 |
 | | the `gpu_type` chip of the keys the sink sends is clicked and its row set to drop, the chip is struck out, Cancel | Or pick a tag the sink already sends, then rename or drop it | 이미 보내는 tag 를 골라 이름을 바꾸거나 뺄 수도 있습니다 |
 | `topology` | a VM from the palette goes onto a GPU with room, the same VM dragged onto a full GPU is refused | Topology: drag a VM onto a GPU. A GPU with no room refuses it | 토폴로지: VM 을 GPU 에 끌어다 놓습니다. 자리가 없는 GPU 는 거부합니다 |
+| | GPU 2 of the first node (three VMs) is right-clicked and set to Passthrough in its menu; the node head gets a second type tag and a toast names the two VMs that did not fit | Right-click a GPU to add a VM or change its type. VMs that do not fit are deleted | GPU 를 우클릭해 VM 을 추가하거나 유형을 바꿉니다. 자리가 모자라면 넘치는 VM 은 지웁니다 |
+| | a VM is right-clicked and Delete VM in its menu removes it | Right-click a VM to delete it. The Delete key removes the selected one too | VM 을 우클릭해 지웁니다. 선택한 것은 Delete 키로도 지웁니다 |
 | | Save shows the saved toast | Save: the fake OpenStack API serves the new topology right away | 저장: 가짜 OpenStack API 가 새 토폴로지를 바로 내보냅니다 |
 
 The captions are in `CAPTIONS` at the top of `record.mjs`.
