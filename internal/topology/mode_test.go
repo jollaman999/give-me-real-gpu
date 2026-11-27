@@ -225,13 +225,13 @@ func TestBlackwellCatalog(t *testing.T) {
 	for _, p := range bw.MIGProfiles {
 		var vs []string
 		for _, v := range p.VGPUProfiles {
-			vs = append(vs, fmt.Sprintf("%s %d %d", strings.TrimPrefix(v.Name, "NVIDIA RTX Pro 6000 Blackwell "), v.FramebufferMB, v.MaxInstances))
+			vs = append(vs, fmt.Sprintf("%s %d %d %d", strings.TrimPrefix(v.Name, "NVIDIA RTX Pro 6000 Blackwell "), v.FramebufferMB, v.MaxInstances, v.PerGPUInstance))
 		}
 		mig = append(mig, p.Name+"/"+p.Flavor+"/"+strings.Join(vs, "+"))
 	}
-	wantMIG := "1g.24gb/emu-mig-1g-24gb/DC-1-24Q 24576 4+DC-1-24C 24576 4," +
-		"2g.48gb/emu-mig-2g-48gb/DC-2-48Q 49152 2+DC-2-48C 49152 2," +
-		"4g.96gb/emu-mig-4g-96gb/DC-4-96Q 98304 1+DC-4-96C 98304 1"
+	wantMIG := "1g.24gb/emu-mig-1g-24gb/DC-1-24Q 24576 4 0+DC-1-24C 24576 4 0+DC-1-12C 12288 8 2+DC-1-8C 8192 12 3," +
+		"2g.48gb/emu-mig-2g-48gb/DC-2-48Q 49152 2 0+DC-2-48C 49152 2 0+DC-2-24C 24576 4 2+DC-2-16C 16384 6 3+DC-2-12C 12288 8 4," +
+		"4g.96gb/emu-mig-4g-96gb/DC-4-96Q 98304 1 0+DC-4-96C 98304 1 0+DC-4-48C 49152 2 2+DC-4-32C 32768 3 3+DC-4-24C 24576 4 4"
 	if got := strings.Join(mig, ","); got != wantMIG {
 		t.Errorf("Blackwell MIG profiles\n got %s\nwant %s", got, wantMIG)
 	}
@@ -315,7 +315,7 @@ func TestBlackwellMIGSlices(t *testing.T) {
 func TestFillKeepsInstanceVGPU(t *testing.T) {
 	top := blackwellMIG("2g.48gb", "2g.48gb")
 	g := top.Hypervisors[0].GPUs[0]
-	c := &VGPUProfile{"NVIDIA RTX Pro 6000 Blackwell DC-2-48C", "nvidia-1198", 49152, 2}
+	c := &VGPUProfile{"NVIDIA RTX Pro 6000 Blackwell DC-2-48C", "nvidia-1198", 49152, 2, 0}
 	g.MIGInstances[1].VGPU = c
 	Fill(top)
 	if err := top.Validate(); err != nil {

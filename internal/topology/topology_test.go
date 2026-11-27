@@ -338,7 +338,7 @@ func TestValidateRejects(t *testing.T) {
 		{"MIG instance assigned twice", func(tp *Topology) {
 			g := findGPU(tp, "emu-mig-01", 0)
 			g.VMs[1].MIGGPUInstanceID = g.VMs[0].MIGGPUInstanceID
-		}, "is already used by"},
+		}, "holds 2 VMs"},
 		{"MIG slices exceeded", func(tp *Topology) {
 			g := findGPU(tp, "emu-mig-01", 3)
 			g.MIGInstances = append(g.MIGInstances, &MIGInstance{GPUInstanceID: 7, Profile: "1g.10gb", Slices: 1})

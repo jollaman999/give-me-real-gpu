@@ -44,12 +44,15 @@ func specFor(model string) gpuSpec {
 // step advances the utilization of the GPU and its VMs for one collection.
 //   - vGPU is time sliced: each VM's util is its share of the physical GPU, so the
 //     shares are scaled down when the demand exceeds 100.
-//   - MIG instances are independent; the device util is the slice weighted mean.
+//   - MIG instances are independent; the device util is the slice weighted mean of the
+//     instance utils. VMs sharing one instance are time sliced inside it like vGPU, so the
+//     instance util is the sum of their shares.
 //   - passthrough: the single VM owns the GPU.
 func (gs *gpuState) step() {
 	mode := gs.mode
 	gs.util = 0
 	gs.fbUsed = 0
+	gs.giUtil = nil
 	switch mode {
 	case topology.ModeVGPU:
 		sum := 0.0
@@ -69,15 +72,36 @@ func (gs *gpuState) step() {
 		gs.util = clamp(gs.util, 0, 100)
 		gs.fbUsed = clamp(gs.fbUsed, 0, float64(gs.g.MemoryMiB)*0.99)
 	case topology.ModeMIG:
-		weighted := 0.0
+		demand := map[*topology.MIGInstance]float64{}
 		for _, vs := range gs.vms {
-			vs.util = round(vs.demand.next(vs.r), 1)
-			slices, mem := 1, 0
-			if vs.mig != nil {
-				slices, mem = vs.mig.Slices, vs.mig.MemoryMiB
+			vs.util = vs.demand.next(vs.r)
+			demand[vs.mig] += vs.util
+		}
+		gs.giUtil = map[*topology.MIGInstance]float64{}
+		for _, vs := range gs.vms {
+			scale := 1.0
+			if vs.mig != nil && demand[vs.mig] > 100 {
+				scale = 100 / demand[vs.mig]
 			}
-			weighted += vs.util * float64(slices)
-			gs.fbUsed += float64(mem)
+			vs.util = round(vs.util*scale, 1)
+			if vs.mig != nil {
+				gs.giUtil[vs.mig] += vs.util
+			}
+		}
+		weighted := 0.0
+		counted := map[*topology.MIGInstance]bool{}
+		for _, vs := range gs.vms {
+			if vs.mig == nil {
+				weighted += vs.util
+				continue
+			}
+			if counted[vs.mig] {
+				continue
+			}
+			counted[vs.mig] = true
+			gs.giUtil[vs.mig] = clamp(gs.giUtil[vs.mig], 0, 100)
+			weighted += gs.giUtil[vs.mig] * float64(vs.mig.Slices)
+			gs.fbUsed += float64(vs.mig.MemoryMiB)
 		}
 		gs.util = clamp(weighted/float64(topology.MIGSlices(gs.g.ModelName)), 0, 100)
 		gs.fbUsed = clamp(gs.fbUsed, 0, float64(gs.g.MemoryMiB))
@@ -185,7 +209,8 @@ func physTags(base map[string]string, gs *gpuState, index int, busID, driver, cu
 
 // emitPhysical writes the physical GPU point of a VGPU or MIG GPU, and for a MIG GPU
 // the GPM points (device and per instance) that gpm_to_vm moves onto
-// the physical and VM series.
+// the physical and VM series. GPM measures the instance, so every VM sharing one
+// instance gets that instance's util.
 func (g *Generator) emitPhysical(b *batch, hs *hostState, gs *gpuState, ts, st int64) {
 	base := g.hostTags(hs)
 	mig := gs.mode == topology.ModeMIG
@@ -202,7 +227,7 @@ func (g *Generator) emitPhysical(b *batch, hs *hostState, gs *gpuState, ts, st i
 		if vs.mig == nil {
 			continue
 		}
-		f := gpmFields(vs.util, vs.r)
+		f := gpmFields(gs.giUtil[vs.mig], vs.r)
 		f["server_time"] = st
 		b.add("dcgm", g.vmExecTags(vs), f, ts)
 	}

@@ -65,8 +65,20 @@ func TestCatalog(t *testing.T) {
 	if bw.Name != bwName || len(bw.VGPUProfiles) != 14 || len(bw.MIGProfiles) != 3 {
 		t.Fatalf("Blackwell model %s: %d vGPU types, %d MIG kinds", bw.Name, len(bw.VGPUProfiles), len(bw.MIGProfiles))
 	}
-	if p := bw.MIGProfiles[1]; p.Name != "2g.48gb" || len(p.VGPUProfiles) != 2 || p.VGPU["name"] != "NVIDIA RTX Pro 6000 Blackwell DC-2-48Q" {
-		t.Errorf("Blackwell 2g.48gb %s: %d vgpu_profiles, vgpu_profile %v", p.Name, len(p.VGPUProfiles), p.VGPU)
+	p := bw.MIGProfiles[1]
+	if p.Name != "2g.48gb" || len(p.VGPUProfiles) != 5 || p.VGPU["name"] != "NVIDIA RTX Pro 6000 Blackwell DC-2-48Q" {
+		t.Fatalf("Blackwell 2g.48gb %s: %d vgpu_profiles, vgpu_profile %v", p.Name, len(p.VGPUProfiles), p.VGPU)
+	}
+	// The editor reads how many VMs one instance holds from per_gpu_instance; whole-instance types leave it out.
+	if _, ok := p.VGPU["per_gpu_instance"]; ok {
+		t.Errorf("whole-instance vgpu_profile has per_gpu_instance: %v", p.VGPU)
+	}
+	var shared map[string]any
+	if err := json.Unmarshal(p.VGPUProfiles[4], &shared); err != nil {
+		t.Fatal(err)
+	}
+	if shared["name"] != "NVIDIA RTX Pro 6000 Blackwell DC-2-12C" || shared["per_gpu_instance"] != 4.0 || shared["max_instances"] != 8.0 {
+		t.Errorf("2g.48gb time-sliced type %v", shared)
 	}
 }
 

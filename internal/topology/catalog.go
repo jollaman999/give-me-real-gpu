@@ -120,36 +120,53 @@ var modelRTXPro6000BW = gpuModel{"NVIDIA RTX PRO 6000 Blackwell Server Edition",
 
 // MIG kinds of the RTX PRO 6000 Blackwell (4 slices). 2g.48gb memory and GI IDs 1, 2 are measured;
 // the 1g and 4g memory and the 1g GI IDs 3..6 are estimated with the same layout as the A100.
-// Each kind carries a Q (graphics) or a C (compute) MIG-backed vGPU type that uses the whole instance.
+// Each kind carries a Q (graphics) or a C (compute) MIG-backed vGPU type that uses the whole instance,
+// followed by the time-sliced C types several VMs share one instance with. Their framebuffer, maximum per
+// GPU and count per instance follow the NVIDIA AI Enterprise MIG-backed vGPU table for this board; the
+// type numbers (nvidia-1200 on) are not measured.
 var (
 	migRTXPro6000_1g = migProfile{"1g.24gb", 1, 23808, []int{3, 4, 5, 6},
-		VGPUProfile{"NVIDIA RTX Pro 6000 Blackwell DC-1-24Q", "nvidia-1187", 24576, 4}, migFlavorName("1g.24gb"),
-		[]VGPUProfile{{"NVIDIA RTX Pro 6000 Blackwell DC-1-24C", "nvidia-1197", 24576, 4}}}
+		VGPUProfile{"NVIDIA RTX Pro 6000 Blackwell DC-1-24Q", "nvidia-1187", 24576, 4, 0}, migFlavorName("1g.24gb"),
+		[]VGPUProfile{
+			{"NVIDIA RTX Pro 6000 Blackwell DC-1-24C", "nvidia-1197", 24576, 4, 0},
+			{"NVIDIA RTX Pro 6000 Blackwell DC-1-12C", "nvidia-1206", 12288, 8, 2},
+			{"NVIDIA RTX Pro 6000 Blackwell DC-1-8C", "nvidia-1207", 8192, 12, 3},
+		}}
 	migRTXPro6000_2g = migProfile{"2g.48gb", 2, 47744, []int{1, 2},
-		VGPUProfile{"NVIDIA RTX Pro 6000 Blackwell DC-2-48Q", "nvidia-1188", 49152, 2}, migFlavorName("2g.48gb"),
-		[]VGPUProfile{{"NVIDIA RTX Pro 6000 Blackwell DC-2-48C", "nvidia-1198", 49152, 2}}}
+		VGPUProfile{"NVIDIA RTX Pro 6000 Blackwell DC-2-48Q", "nvidia-1188", 49152, 2, 0}, migFlavorName("2g.48gb"),
+		[]VGPUProfile{
+			{"NVIDIA RTX Pro 6000 Blackwell DC-2-48C", "nvidia-1198", 49152, 2, 0},
+			{"NVIDIA RTX Pro 6000 Blackwell DC-2-24C", "nvidia-1203", 24576, 4, 2},
+			{"NVIDIA RTX Pro 6000 Blackwell DC-2-16C", "nvidia-1204", 16384, 6, 3},
+			{"NVIDIA RTX Pro 6000 Blackwell DC-2-12C", "nvidia-1205", 12288, 8, 4},
+		}}
 	migRTXPro6000_4g = migProfile{"4g.96gb", 4, 95616, []int{0},
-		VGPUProfile{"NVIDIA RTX Pro 6000 Blackwell DC-4-96Q", "nvidia-1189", 98304, 1}, migFlavorName("4g.96gb"),
-		[]VGPUProfile{{"NVIDIA RTX Pro 6000 Blackwell DC-4-96C", "nvidia-1199", 98304, 1}}}
+		VGPUProfile{"NVIDIA RTX Pro 6000 Blackwell DC-4-96Q", "nvidia-1189", 98304, 1, 0}, migFlavorName("4g.96gb"),
+		[]VGPUProfile{
+			{"NVIDIA RTX Pro 6000 Blackwell DC-4-96C", "nvidia-1199", 98304, 1, 0},
+			{"NVIDIA RTX Pro 6000 Blackwell DC-4-48C", "nvidia-1200", 49152, 2, 2},
+			{"NVIDIA RTX Pro 6000 Blackwell DC-4-32C", "nvidia-1201", 32768, 3, 3},
+			{"NVIDIA RTX Pro 6000 Blackwell DC-4-24C", "nvidia-1202", 24576, 4, 4},
+		}}
 )
 
 // catalogExtraModels are added after the default topology's models.
 var catalogExtraModels = []catalogModel{
 	{model: modelRTXPro6000BW, vgpu: []VGPUProfile{
-		{"NVIDIA RTX Pro 6000 Blackwell DC-24Q", "nvidia-1180", 24576, 4},
-		{"NVIDIA RTX Pro 6000 Blackwell DC-8Q", "nvidia-1181", 8192, 12},
-		{"NVIDIA RTX Pro 6000 Blackwell DC-12Q", "nvidia-1182", 12288, 8},
-		{"NVIDIA RTX Pro 6000 Blackwell DC-16Q", "nvidia-1183", 16384, 6},
-		{"NVIDIA RTX Pro 6000 Blackwell DC-32Q", "nvidia-1184", 32768, 3},
-		{"NVIDIA RTX Pro 6000 Blackwell DC-48Q", "nvidia-1185", 49152, 2},
-		{"NVIDIA RTX Pro 6000 Blackwell DC-96Q", "nvidia-1186", 98304, 1},
-		{"NVIDIA RTX Pro 6000 Blackwell DC-8C", "nvidia-1190", 8192, 12},
-		{"NVIDIA RTX Pro 6000 Blackwell DC-12C", "nvidia-1191", 12288, 8},
-		{"NVIDIA RTX Pro 6000 Blackwell DC-16C", "nvidia-1192", 16384, 6},
-		{"NVIDIA RTX Pro 6000 Blackwell DC-24C", "nvidia-1193", 24576, 4},
-		{"NVIDIA RTX Pro 6000 Blackwell DC-32C", "nvidia-1194", 32768, 3},
-		{"NVIDIA RTX Pro 6000 Blackwell DC-48C", "nvidia-1195", 49152, 2},
-		{"NVIDIA RTX Pro 6000 Blackwell DC-96C", "nvidia-1196", 98304, 1},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-24Q", "nvidia-1180", 24576, 4, 0},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-8Q", "nvidia-1181", 8192, 12, 0},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-12Q", "nvidia-1182", 12288, 8, 0},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-16Q", "nvidia-1183", 16384, 6, 0},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-32Q", "nvidia-1184", 32768, 3, 0},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-48Q", "nvidia-1185", 49152, 2, 0},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-96Q", "nvidia-1186", 98304, 1, 0},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-8C", "nvidia-1190", 8192, 12, 0},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-12C", "nvidia-1191", 12288, 8, 0},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-16C", "nvidia-1192", 16384, 6, 0},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-24C", "nvidia-1193", 24576, 4, 0},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-32C", "nvidia-1194", 32768, 3, 0},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-48C", "nvidia-1195", 49152, 2, 0},
+		{"NVIDIA RTX Pro 6000 Blackwell DC-96C", "nvidia-1196", 98304, 1, 0},
 	}},
 }
 
@@ -332,7 +349,7 @@ type filler struct {
 // "Empty" is "" for strings, 0 for sizes and ids, nil for profiles, and a negative number for
 // MIG GPU instance ids (0 is a valid GI ID). A GPU's mode is not filled: empty means the node's mode.
 // A VM on a MIG GPU with a negative mig_gpu_instance_id gets the first GPU instance no other VM
-// on that GPU uses.
+// on that GPU uses, or failing that the first one whose vGPU type has room for another VM.
 // GPU indexes are not filled: 0 is a valid index. A VM's gpu_index of 0 is taken as empty and set to
 // the index of the GPU it sits under.
 func Fill(t *Topology) {
@@ -709,16 +726,22 @@ func (f *filler) flavorByID(id string) *Flavor {
 	return nil
 }
 
-// freeInstance returns the GI ID of the first instance on g no other VM uses, or -1 when every one is taken.
+// freeInstance returns the GI ID of the first instance on g no other VM uses, otherwise the first instance
+// whose vGPU type still has room for another VM, or -1 when every one is full.
 func freeInstance(g *GPU, self *VM) int {
-	used := map[int]bool{}
+	used := map[int]int{}
 	for _, o := range g.VMs {
 		if o != nil && o != self && o.MIGGPUInstanceID >= 0 {
-			used[o.MIGGPUInstanceID] = true
+			used[o.MIGGPUInstanceID]++
 		}
 	}
 	for _, mi := range g.MIGInstances {
-		if mi != nil && mi.GPUInstanceID >= 0 && !used[mi.GPUInstanceID] {
+		if mi != nil && mi.GPUInstanceID >= 0 && used[mi.GPUInstanceID] == 0 {
+			return mi.GPUInstanceID
+		}
+	}
+	for _, mi := range g.MIGInstances {
+		if mi != nil && mi.GPUInstanceID >= 0 && used[mi.GPUInstanceID] < mi.VGPU.PerInstance() {
 			return mi.GPUInstanceID
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 // Load reads a topology JSON file and validates it. An empty path returns Default().
@@ -152,7 +153,7 @@ func (t *Topology) validateGPU(h *Hypervisor, g *GPU, where string,
 		}
 	}
 
-	used := map[int]string{}
+	onInstance := map[int][]string{}
 	for k, vm := range g.VMs {
 		if vm == nil {
 			fail("%s: vms[%d] is null", where, k)
@@ -189,13 +190,21 @@ func (t *Topology) validateGPU(h *Hypervisor, g *GPU, where string,
 		if mode == ModeMIG {
 			if instances[vm.MIGGPUInstanceID] == nil {
 				fail("%s: GPU instance %d not found on %s", vw, vm.MIGGPUInstanceID, where)
-			} else if prev, ok := used[vm.MIGGPUInstanceID]; ok {
-				fail("%s: GPU instance %d is already used by %s", vw, vm.MIGGPUInstanceID, prev)
 			} else {
-				used[vm.MIGGPUInstanceID] = vm.Name
+				onInstance[vm.MIGGPUInstanceID] = append(onInstance[vm.MIGGPUInstanceID], vm.Name)
 			}
 		} else if vm.MIGGPUInstanceID != -1 {
 			fail("%s: mig_gpu_instance_id is %d on a non-MIG GPU (must be -1)", vw, vm.MIGGPUInstanceID)
+		}
+	}
+	for _, mi := range g.MIGInstances {
+		if mi == nil || instances[mi.GPUInstanceID] != mi {
+			continue
+		}
+		names := onInstance[mi.GPUInstanceID]
+		if n := mi.VGPU.PerInstance(); len(names) > n {
+			fail("%s: GPU instance %d holds %d VMs (%s), more than the %d its vGPU type allows",
+				where, mi.GPUInstanceID, len(names), strings.Join(names, ", "), n)
 		}
 	}
 }

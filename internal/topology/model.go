@@ -61,7 +61,8 @@ type GPU struct {
 	Profile *VGPUProfile `json:"profile,omitempty"`
 	// GPU instances this GPU is split into in MIG mode. Empty in other modes.
 	MIGInstances []*MIGInstance `json:"mig_instances,omitempty"`
-	// VMs using this GPU. VGPU allows several, MIG at most one per instance, passthrough at most one.
+	// VMs using this GPU. VGPU allows several, MIG per instance as many as its vGPU type's per_gpu_instance,
+	// passthrough at most one.
 	// An empty list means the GPU is unassigned.
 	VMs []*VM `json:"vms"`
 }
@@ -72,6 +73,17 @@ type VGPUProfile struct {
 	Type          string `json:"type"`           // mdev type name (e.g. nvidia-592), the vgpu_profile field
 	FramebufferMB int    `json:"framebuffer_mb"` // vgpu_fb_mb
 	MaxInstances  int    `json:"max_instances"`  // vgpu_max_instances
+	// vGPUs one GPU instance holds when this is a MIG-backed vGPU type; 0 means 1.
+	PerGPUInstance int `json:"per_gpu_instance,omitempty"`
+}
+
+// PerInstance is the number of VMs one GPU instance carrying this vGPU type holds: PerGPUInstance,
+// or 1 when it is 0 or p is nil.
+func (p *VGPUProfile) PerInstance() int {
+	if p == nil || p.PerGPUInstance <= 0 {
+		return 1
+	}
+	return p.PerGPUInstance
 }
 
 // MIGInstance is a single MIG GPU instance.

@@ -287,8 +287,8 @@ og.mig_instances.push(h.newInstance(og, old));
 out.oldInst = og.mig_instances[0].vgpu_profile.name === old.vgpu_profile.name;
 const oldCat = copy(cat);
 oldCat.gpu_models.forEach(m => m.mig_profiles.forEach(p => delete p.vgpu_profiles));
-out.oldSet = [h.setInstanceVGPU(oldCat, og, og.mig_instances[0].gpu_instance_id, old.vgpu_profile.name),
-  h.setInstanceVGPU(oldCat, og, og.mig_instances[0].gpu_instance_id, "other")];
+out.oldSet = [h.setInstanceVGPU(oldCat, og, og.mig_instances[0].gpu_instance_id, old.vgpu_profile.name).changed,
+  h.setInstanceVGPU(oldCat, og, og.mig_instances[0].gpu_instance_id, "other").changed];
 // A kind with two types: a new instance takes the first, and the second can be picked without touching the VM.
 const k2 = four.mig_profiles[1];
 k2.vgpu_profiles = [vp("x-2-48Q"), vp("x-2-48C")];
@@ -297,8 +297,8 @@ const mg = {model_name: four.name, mig_instances: [], vms: [{name: "m1", mode: "
 mg.mig_instances.push(h.newInstance(mg, k2));
 mg.vms[0].mig_gpu_instance_id = mg.mig_instances[0].gpu_instance_id;
 const before = mg.mig_instances[0].vgpu_profile.name;
-out.pickVGPU = [before, h.setInstanceVGPU(cat, mg, 1, "x-2-48C"), mg.mig_instances[0].vgpu_profile.name,
-  h.setInstanceVGPU(cat, mg, 1, "nope"), mg.mig_instances[0].vgpu_profile.name, h.setInstanceVGPU(cat, mg, 9, "x-2-48Q"),
+out.pickVGPU = [before, h.setInstanceVGPU(cat, mg, 1, "x-2-48C").changed, mg.mig_instances[0].vgpu_profile.name,
+  h.setInstanceVGPU(cat, mg, 1, "nope").changed, mg.mig_instances[0].vgpu_profile.name, h.setInstanceVGPU(cat, mg, 9, "x-2-48Q").changed,
   mg.vms[0].flavor_id + " " + mg.vms[0].vcpus];
 out.pickCopy = mg.mig_instances[0].vgpu_profile !== k2.vgpu_profiles[1];
 
@@ -378,6 +378,107 @@ func TestTopologyJSModes(t *testing.T) {
 			[]any{"PASSTHROUGH"},
 			[]any{"VGPU"},
 		},
+	}
+	for k, w := range want {
+		if !reflect.DeepEqual(got[k], w) {
+			t.Errorf("%s = %#v, want %#v", k, got[k], w)
+		}
+	}
+}
+
+// jsSharedScript checks MIG instances that several VMs share in time slices: seats per instance, drops on a shared
+// instance, the instance a drop on the GPU picks, VMs deleted when the vGPU type seats fewer and the instances a VM
+// may move to in its properties.
+const jsSharedScript = `
+const h = require(process.argv[2]);
+const cat = JSON.parse(process.argv[3]);
+const out = {};
+const vp = (name, per) => { const p = {name: name, type: "nvidia-1", framebuffer_mb: 1024, max_instances: 4}; if (per) p.per_gpu_instance = per; return p; };
+const four = {name: "Test 4-slice GPU", memory_mib: 97887, modes: ["MIG"], max_mig_slices: 4, vgpu_profiles: [], mig_profiles: [
+  {name: "2g.48gb", slices: 2, memory_mib: 47744, gpu_instance_ids: [1, 2],
+   vgpu_profiles: [vp("x-2-48Q"), vp("x-2-48C"), vp("x-2-24C", 2), vp("x-2-12C", 4)]},
+  {name: "1g.24gb", slices: 1, memory_mib: 23000, gpu_instance_ids: [3, 4, 5, 6], vgpu_profiles: [vp("x-1-24Q"), vp("x-1-8C", 3)]}]};
+cat.gpu_models.push(four);
+
+out.seats = [h.instanceSeats(null), h.instanceSeats({}), h.instanceSeats({vgpu_profile: vp("a")}), h.instanceSeats({vgpu_profile: vp("b", 4)})];
+
+const g = {index: 0, model_name: four.name, mode: "MIG", mig_instances: [], vms: []};
+const t = {flavors: [], hypervisors: [{hostname: "n1", mode: "MIG", gpus: [g]}]};
+g.mig_instances.push(h.newInstance(g, four.mig_profiles[0]));
+g.mig_instances.push(h.newInstance(g, four.mig_profiles[0]));
+out.newDefault = g.mig_instances.map(mi => mi.vgpu_profile.name + " " + h.instanceSeats(mi));
+out.set12C = h.setInstanceVGPU(cat, g, 1, "x-2-12C");
+out.copied = g.mig_instances[0].vgpu_profile.per_gpu_instance;
+let n = 0;
+const show = (r) => r.ok ? (r.gi !== undefined ? "gi:" + r.gi : "create:" + r.create.name) : r.reason + (r.params ? " " + JSON.stringify(r.params) : "");
+const put = (target) => {
+  const r = h.acceptVM(t, cat, Object.assign({h: 0, g: 0}, target), {kind: "new-vm"});
+  if (r.ok && r.gi !== undefined) g.vms.push({name: "vm" + (++n), mode: "MIG", mig_gpu_instance_id: r.gi});
+  return show(r);
+};
+// Four VMs on the shared instance, the fifth is refused with the seat count. GI 2 seats one VM and names it when taken.
+out.shared = [put({slot: 1}), put({slot: 1}), put({slot: 2}), put({slot: 1}), put({slot: 1}), put({slot: 1}), put({slot: 2})];
+// A VM already on GI 1 dropped on GI 1 again is "same"; vm3 from GI 2 onto the full GI 1 is refused.
+const idx = (name) => g.vms.findIndex(v => v.name === name);
+out.move = [show(h.acceptVM(t, cat, {h: 0, g: 0, slot: 1}, {kind: "vm", h: 0, g: 0, v: idx("vm1")})),
+  show(h.acceptVM(t, cat, {h: 0, g: 0, slot: 1}, {kind: "vm", h: 0, g: 0, v: idx("vm3")}))];
+
+// A drop on the GPU picks an empty instance before a shared one with room, and a new instance last.
+const g2 = {index: 0, model_name: four.name, mode: "MIG", mig_instances: [], vms: []};
+const t2 = {flavors: [], hypervisors: [{hostname: "n2", mode: "MIG", gpus: [g2]}]};
+g2.mig_instances.push(h.newInstance(g2, four.mig_profiles[0]));
+h.setInstanceVGPU(cat, g2, 1, "x-2-24C");
+g2.vms.push({name: "a", mode: "MIG", mig_gpu_instance_id: 1});
+g2.mig_instances.push(h.newInstance(g2, four.mig_profiles[1]));
+const onGPU = () => show(h.acceptVM(t2, cat, {h: 0, g: 0}, {kind: "new-vm"}));
+out.pick = [onGPU()];
+g2.vms.push({name: "b", mode: "MIG", mig_gpu_instance_id: 3});
+out.pick.push(onGPU());
+g2.vms.push({name: "c", mode: "MIG", mig_gpu_instance_id: 1});
+out.pick.push(onGPU());
+g2.mig_instances.push(h.newInstance(g2, four.mig_profiles[1]));
+g2.vms.push({name: "d", mode: "MIG", mig_gpu_instance_id: 4});
+out.pick.push(onGPU());
+
+// The VM properties offer the instances with a seat for the VM: its own, and GI 1 only while it has room.
+const choices = (gp, name) => h.instanceChoices(gp, gp.vms.find(v => v.name === name)).map(mi => mi.gpu_instance_id);
+out.choices = [choices(g, "vm3")];
+g.vms.splice(idx("vm2"), 1);
+out.choices.push(choices(g, "vm3"), choices(g, "vm1"));
+
+// Fewer seats delete the last VMs of the instance and leave the VMs of other instances alone.
+g.vms = [{name: "p1", mig_gpu_instance_id: 1}, {name: "q1", mig_gpu_instance_id: 2}, {name: "p2", mig_gpu_instance_id: 1},
+  {name: "p3", mig_gpu_instance_id: 1}, {name: "p4", mig_gpu_instance_id: 1}];
+const r24 = h.setInstanceVGPU(cat, g, 1, "x-2-24C");
+out.to24C = [r24.changed, r24.removed, g.vms.map(v => v.name), h.instanceSeats(g.mig_instances[0])];
+const rQ = h.setInstanceVGPU(cat, g, 1, "x-2-48Q");
+out.toQ = [rQ.changed, rQ.removed, g.vms.map(v => v.name), g.mig_instances[0].vgpu_profile.per_gpu_instance === undefined];
+const rMore = h.setInstanceVGPU(cat, g, 1, "x-2-12C");
+out.toMore = [rMore.changed, rMore.removed, g.vms.map(v => v.name)];
+out.bad = h.setInstanceVGPU(cat, g, 1, "nope");
+console.log(JSON.stringify(out));
+`
+
+func TestTopologyJSSharedInstances(t *testing.T) {
+	got := runTopologyJS(t, jsSharedScript)
+	want := map[string]any{
+		"seats":      []any{1.0, 1.0, 1.0, 4.0},
+		"newDefault": []any{"x-2-48Q 1", "x-2-48Q 1"},
+		"set12C":     map[string]any{"changed": true, "removed": []any{}},
+		"copied":     4.0,
+		"shared": []any{"gi:1", "gi:1", "gi:2", "gi:1", "gi:1", `gi_full {"max":4}`,
+			`slot_used {"vm":"vm3"}`},
+		"move": []any{"same", `gi_full {"max":4}`},
+		"pick": []any{"gi:3", "gi:1", "create:1g.24gb", "no_slices {\"used\":4,\"max\":4}"},
+		"choices": []any{
+			[]any{2.0},
+			[]any{1.0, 2.0},
+			[]any{1.0},
+		},
+		"to24C":  []any{true, []any{"p3", "p4"}, []any{"p1", "q1", "p2"}, 2.0},
+		"toQ":    []any{true, []any{"p2"}, []any{"p1", "q1"}, true},
+		"toMore": []any{true, []any{}, []any{"p1", "q1"}},
+		"bad":    map[string]any{"changed": false, "removed": []any{}},
 	}
 	for k, w := range want {
 		if !reflect.DeepEqual(got[k], w) {

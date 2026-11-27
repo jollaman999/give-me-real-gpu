@@ -56,6 +56,8 @@ type gpuState struct {
 	vms  []*vmState
 	// fbUsed is the framebuffer in use on the physical GPU (MiB).
 	fbUsed float64
+	// giUtil is the util of each MIG instance that has a VM (the sum of its VMs' shares), MIG only.
+	giUtil map[*topology.MIGInstance]float64
 }
 
 type vmState struct {

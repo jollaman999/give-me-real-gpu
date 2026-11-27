@@ -71,6 +71,8 @@ type physGPU struct {
 	temp, util, fbUsed       float64
 	power, smClock, memClock float64
 	reasons, decUtil         float64
+	// giUtil is the util of each MIG instance that has a VM (the sum of its VMs' shares), MIG only.
+	giUtil map[*topology.MIGInstance]float64
 }
 
 func newPhysGPU(seed int64, h *topology.Hypervisor, gp *topology.GPU) *physGPU {
@@ -200,10 +202,13 @@ func vgpuFramebuffer(vg *vmGPU) float64 {
 // step advances the utilization of the GPU and its VMs for one collection.
 //   - vGPU is time sliced: each VM's util is its share of the physical GPU, so the
 //     shares are scaled down when the demand exceeds 100.
-//   - MIG instances are independent; the device util is the slice weighted mean.
+//   - MIG instances are independent; the device util is the slice weighted mean of the
+//     instance utils. VMs sharing one instance are time sliced inside it like vGPU, so the
+//     instance util is the sum of their shares.
 //   - passthrough: the single VM owns the GPU.
 func (pg *physGPU) step() {
 	pg.util, pg.fbUsed, pg.decUtil = 0, 0, 0
+	pg.giUtil = nil
 	switch pg.mode {
 	case topology.ModeVGPU:
 		sum := 0.0
@@ -221,15 +226,36 @@ func (pg *physGPU) step() {
 			pg.fbUsed += vgpuFramebuffer(vg)
 		}
 	case topology.ModeMIG:
-		weighted := 0.0
+		demand := map[*topology.MIGInstance]float64{}
 		for _, vg := range pg.vms {
-			vg.util = round(vg.demand.next(vg.r), 1)
-			slices := 1
-			if vg.mig != nil {
-				slices = vg.mig.Slices
-				pg.fbUsed += float64(vg.mig.MemoryMiB)
+			vg.util = vg.demand.next(vg.r)
+			demand[vg.mig] += vg.util
+		}
+		pg.giUtil = map[*topology.MIGInstance]float64{}
+		for _, vg := range pg.vms {
+			scale := 1.0
+			if vg.mig != nil && demand[vg.mig] > 100 {
+				scale = 100 / demand[vg.mig]
 			}
-			weighted += vg.util * float64(slices)
+			vg.util = round(vg.util*scale, 1)
+			if vg.mig != nil {
+				pg.giUtil[vg.mig] += vg.util
+			}
+		}
+		weighted := 0.0
+		counted := map[*topology.MIGInstance]bool{}
+		for _, vg := range pg.vms {
+			if vg.mig == nil {
+				weighted += vg.util
+				continue
+			}
+			if counted[vg.mig] {
+				continue
+			}
+			counted[vg.mig] = true
+			pg.giUtil[vg.mig] = clamp(pg.giUtil[vg.mig], 0, 100)
+			weighted += pg.giUtil[vg.mig] * float64(vg.mig.Slices)
+			pg.fbUsed += float64(vg.mig.MemoryMiB)
 		}
 		pg.util = weighted / float64(topology.MIGSlices(pg.g.ModelName))
 	case topology.ModePassthrough:
@@ -382,13 +408,7 @@ func (v *gpuView) gpmTargets() []gpmTarget {
 	}
 	out := []gpmTarget{{util: pg.util}}
 	for _, mi := range pg.g.MIGInstances {
-		u := 0.0
-		for _, vg := range pg.vms {
-			if vg.mig == mi {
-				u = vg.util
-			}
-		}
-		out = append(out, gpmTarget{util: u, mig: true, gi: mi.GPUInstanceID, migUUID: migUUID(pg, mi.GPUInstanceID)})
+		out = append(out, gpmTarget{util: pg.giUtil[mi], mig: true, gi: mi.GPUInstanceID, migUUID: migUUID(pg, mi.GPUInstanceID)})
 	}
 	return out
 }

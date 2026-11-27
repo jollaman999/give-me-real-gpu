@@ -215,8 +215,13 @@
   gap: 0.15rem;
   min-width: 0;
 }
-.tp-slot-label { font-size: 10px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tp-slot .tp-seat { min-width: 0; }
+.tp-slot-head { display: flex; align-items: baseline; gap: 0.25rem; min-width: 0; }
+.tp-slot-label { font-size: 10px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tp-slot-count { flex: none; margin-left: auto; font-size: 10px; font-family: var(--mono); color: var(--text-dim); }
+/* The VMs that share an instance sit side by side while they fit and wrap one per line in a narrow slot. */
+.tp-slot-vms { display: flex; flex-wrap: wrap; gap: 0.15rem; min-width: 0; }
+.tp-slot-vms > * { flex: 1 1 auto; min-width: 0; box-sizing: border-box; }
+.tp-slot .tp-seat { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tp-free {
   border-style: dashed;
   border-color: var(--border-strong);
@@ -355,6 +360,8 @@
 .tp-table { width: 100%; font-size: 12px; }
 .tp-props .tp-table th, .tp-props .tp-table td { padding: 0.35rem 0.3rem; }
 .tp-nowrap { white-space: nowrap; }
+.tp-mig-vms { min-width: 0; }
+.tp-mig-vms > div { overflow: hidden; text-overflow: ellipsis; }
 /* MIG instances: each instance is a row and the line with its vGPU type below it, banded as one. */
 .tp-mig-table tbody tr { background: transparent; }
 .tp-mig-table tbody tr:hover { background: transparent; }

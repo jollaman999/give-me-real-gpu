@@ -191,7 +191,30 @@
 
   function profileCopy(p) {
     if (!p) return null;
-    return { name: p.name, type: p.type, framebuffer_mb: p.framebuffer_mb, max_instances: p.max_instances };
+    var c = { name: p.name, type: p.type, framebuffer_mb: p.framebuffer_mb, max_instances: p.max_instances };
+    if (p.per_gpu_instance) c.per_gpu_instance = p.per_gpu_instance;
+    return c;
+  }
+
+  // instanceSeats is how many VMs share the MIG instance: the per_gpu_instance of its vGPU type, 1 when it has none.
+  function instanceSeats(mi) {
+    return (mi && mi.vgpu_profile && mi.vgpu_profile.per_gpu_instance) || 1;
+  }
+
+  function instanceByGI(gpu, gi) {
+    return arr(gpu && gpu.mig_instances).filter(function (x) { return x && x.gpu_instance_id === gi; })[0] || null;
+  }
+
+  // instanceVMs lists the VMs of the GPU on the MIG instance with GI ID gi, in the order of gpu.vms, leaving out skip.
+  function instanceVMs(gpu, gi, skip) {
+    return arr(gpu && gpu.vms).filter(function (v) { return v && v !== skip && v.mig_gpu_instance_id === gi; });
+  }
+
+  // instanceChoices lists the MIG instances of the GPU that have a seat for vm: the ones whose other VMs leave room.
+  function instanceChoices(gpu, vm) {
+    return arr(gpu && gpu.mig_instances).filter(function (mi) {
+      return mi && instanceVMs(gpu, mi.gpu_instance_id, vm).length < instanceSeats(mi);
+    });
   }
 
   // migVGPUs lists the vGPU types a MIG kind offers, the default first. An older catalog has only vgpu_profile.
@@ -207,14 +230,18 @@
   }
 
   // setInstanceVGPU gives the MIG instance with GI ID gi the vGPU type name of its kind. The VMs keep their flavor,
-  // which goes by the MIG kind. It answers false when there is no such instance or the kind has no such type.
+  // which goes by the MIG kind. When the type seats fewer VMs than the instance has, the last ones are deleted.
+  // It answers whether the instance changed (false when there is no such instance or the kind has no such type)
+  // and the names of the deleted VMs.
   function setInstanceVGPU(cat, gpu, gi, name) {
-    var mi = arr(gpu && gpu.mig_instances).filter(function (x) { return x && x.gpu_instance_id === gi; })[0];
-    if (!mi) return false;
+    var mi = instanceByGI(gpu, gi);
+    if (!mi) return { changed: false, removed: [] };
     var p = migVGPUs(migKind(cat, gpu, mi)).filter(function (x) { return x && x.name === name; })[0];
-    if (!p) return false;
+    if (!p) return { changed: false, removed: [] };
     mi.vgpu_profile = profileCopy(p);
-    return true;
+    var over = instanceVMs(gpu, gi).slice(instanceSeats(mi));
+    if (over.length) gpu.vms = arr(gpu.vms).filter(function (v) { return over.indexOf(v) < 0; });
+    return { changed: true, removed: over.map(function (vm) { return vm.name || "?"; }) };
   }
 
   // newInstance builds a MIG instance of the kind with the next GI ID on the GPU.
@@ -289,19 +316,24 @@
         }
         return { ok: true };
       case "MIG":
-        var usedBy = {};
-        others.forEach(function (v) { usedBy[v.mig_gpu_instance_id] = v; });
+        var on = function (gi) { return instanceVMs(gpu, gi, moving); };
         if (t.slot !== undefined) {
           if (same && moving.mig_gpu_instance_id === t.slot) return { ok: false, reason: "same" };
-          if (usedBy[t.slot]) return { ok: false, reason: "slot_used", params: { vm: usedBy[t.slot].name } };
+          var seats = instanceSeats(instanceByGI(gpu, t.slot)), users = on(t.slot);
+          if (users.length >= seats) {
+            if (seats > 1) return { ok: false, reason: "gi_full", params: { max: seats } };
+            return { ok: false, reason: "slot_used", params: { vm: users[0].name } };
+          }
           return { ok: true, gi: t.slot };
         }
         if (!t.free) {
           if (same) return { ok: false, reason: "same" };
-          var insts = arr(gpu.mig_instances);
-          for (var i = 0; i < insts.length; i++) {
-            if (insts[i] && !usedBy[insts[i].gpu_instance_id]) return { ok: true, gi: insts[i].gpu_instance_id };
-          }
+          // An empty instance first, then one shared by fewer VMs than it seats.
+          var insts = arr(gpu.mig_instances).filter(Boolean);
+          var empty = insts.filter(function (mi) { return !on(mi.gpu_instance_id).length; })[0];
+          if (empty) return { ok: true, gi: empty.gpu_instance_id };
+          var room = insts.filter(function (mi) { return on(mi.gpu_instance_id).length < instanceSeats(mi); })[0];
+          if (room) return { ok: true, gi: room.gpu_instance_id };
         }
         var fit = fittingProfiles(cat, gpu);
         if (!fit.length) {
@@ -560,6 +592,8 @@
     nodeModes: nodeModes,
     newInstance: newInstance,
     migVGPUs: migVGPUs,
+    instanceSeats: instanceSeats,
+    instanceChoices: instanceChoices,
     setInstanceVGPU: setInstanceVGPU,
     acceptGPU: acceptGPU,
     newGPU: newGPU,
@@ -628,6 +662,7 @@
       r_full_vgpu: "All {max} vGPU slots are used",
       r_no_profile: "Pick a vGPU profile first",
       r_slot_used: "This GPU instance is used by {vm}",
+      r_gi_full: "All {max} vGPU seats of this GPU instance are taken",
       r_no_slices: "No MIG slices left ({used}/{max})",
       r_no_mig_profile: "No MIG profiles for this GPU model",
       r_mode_model: "{model} has no GPU type to run in",
@@ -647,6 +682,8 @@
       f_gpu_mode: "Type",
       f_gpu_mode_hint: "Changing it keeps the VMs and fits them to the new type. VMs that do not fit are deleted.",
       mode_removed: "Changed GPU {gpu} to {mode} and deleted {n} VM(s): {names}",
+      vgpu_removed: "Changed GPU instance {gi} to {vgpu} and deleted {n} VM(s): {names}",
+      vgpu_seats: "{name} ({n} VMs)",
       f_id: "ID",
       f_uuid: "UUID",
       f_host_ip: "Host IP",
@@ -750,6 +787,7 @@
       r_full_vgpu: "vGPU 자리 {max}개가 다 찼습니다",
       r_no_profile: "vGPU 프로필을 먼저 고르세요",
       r_slot_used: "이 GPU 인스턴스는 {vm} 이(가) 쓰고 있습니다",
+      r_gi_full: "이 GPU 인스턴스의 vGPU 자리 {max}개가 다 찼습니다",
       r_no_slices: "남은 MIG slice 가 없습니다 ({used}/{max})",
       r_no_mig_profile: "이 GPU 모델의 MIG 프로필이 없습니다",
       r_mode_model: "{model} 은(는) 쓸 수 있는 GPU 유형이 없습니다",
@@ -769,6 +807,8 @@
       f_gpu_mode: "유형",
       f_gpu_mode_hint: "바꾸면 VM 은 남기고 새 유형에 맞게 고칩니다. 자리가 모자라면 넘치는 VM 은 지웁니다.",
       mode_removed: "GPU {gpu} 유형을 {mode}(으)로 바꾸면서 VM {n}개를 지웠습니다: {names}",
+      vgpu_removed: "GPU 인스턴스 {gi} 의 vGPU 를 {vgpu}(으)로 바꾸면서 VM {n}개를 지웠습니다: {names}",
+      vgpu_seats: "{name} (VM {n}대)",
       f_id: "ID",
       f_uuid: "UUID",
       f_host_ip: "호스트 IP",
@@ -1573,16 +1613,22 @@
       var bar = el("div", "tp-mig");
       bar.style.setProperty("--tp-slices", String(slices));
       var byGI = {};
-      vms.forEach(function (vm, v) { if (vm) byGI[vm.mig_gpu_instance_id] = { vm: vm, v: v }; });
+      vms.forEach(function (vm, v) { if (vm) (byGI[vm.mig_gpu_instance_id] = byGI[vm.mig_gpu_instance_id] || []).push(v); });
       arr(gp.mig_instances).forEach(function (mi) {
         if (!mi) return;
         var slot = el("div", "tp-slot", null, { "data-drop": "slot", "data-h": h, "data-g": g, "data-gi": mi.gpu_instance_id });
         slot.style.gridColumn = "span " + Math.max(1, Math.min(slices, mi.slices || 1));
-        slot.appendChild(el("span", "tp-slot-label", mi.profile + " #" + mi.gpu_instance_id));
+        var hits = byGI[mi.gpu_instance_id] || [];
+        var seats = instanceSeats(mi);
+        var label = el("div", "tp-slot-head");
+        label.appendChild(el("span", "tp-slot-label", mi.profile + " #" + mi.gpu_instance_id));
+        if (seats > 1 || hits.length > seats) label.appendChild(el("span", "tp-slot-count", hits.length + "/" + seats));
+        slot.appendChild(label);
         if (mi.vgpu_profile && mi.vgpu_profile.name) slot.title = mi.vgpu_profile.name;
-        var hit = byGI[mi.gpu_instance_id];
-        if (hit) slot.appendChild(vmChip(h, g, hit.v, hit.vm, mapped, true));
-        else slot.appendChild(el("span", "tp-seat", tr("seat_empty")));
+        var list = el("div", "tp-slot-vms");
+        hits.forEach(function (v) { list.appendChild(vmChip(h, g, v, vms[v], mapped, true)); });
+        for (var k = hits.length; k < seats; k++) list.appendChild(el("span", "tp-seat", tr("seat_empty")));
+        slot.appendChild(list);
         bar.appendChild(slot);
       });
       var left = slices - usedSlices(gp);
@@ -1905,19 +1951,27 @@
       var tb = el("tbody");
       arr(gp.mig_instances).forEach(function (mi, i) {
         if (!mi) return;
-        var user = arr(gp.vms).filter(function (v) { return v && v.mig_gpu_instance_id === mi.gpu_instance_id; })[0];
+        var users = instanceVMs(gp, mi.gpu_instance_id);
+        var seats = instanceSeats(mi);
         var row = el("tr", "tp-mig-row");
         row.appendChild(el("td", null, String(mi.gpu_instance_id)));
         row.appendChild(el("td", "tp-nowrap", mi.profile));
         var prefix = "emu-" + shortName(n.hostname) + "-";
-        var vmLabel = user ? (user.name.indexOf(prefix) === 0 && user.name.length > prefix.length ? user.name.slice(prefix.length) : user.name) : "-";
-        row.appendChild(el("td", "tp-nowrap", vmLabel, { title: user ? user.name : null }));
+        var vmCell = el("td", "tp-mig-vms");
+        users.forEach(function (u) {
+          var name = u.name || "?";
+          var short = name.indexOf(prefix) === 0 && name.length > prefix.length ? name.slice(prefix.length) : name;
+          vmCell.appendChild(el("div", "tp-nowrap", short, { title: name }));
+        });
+        if (!users.length) vmCell.appendChild(el("div", null, "-"));
+        if (seats > 1 || users.length > seats) vmCell.appendChild(el("div", "tp-muted", users.length + "/" + seats));
+        row.appendChild(vmCell);
         var td = el("td", "tp-nowrap");
         var rb = btn(tr("remove"), "btn-small", function () {
           gp.mig_instances.splice(i, 1);
           changed();
         });
-        if (user) {
+        if (users.length) {
           rb.disabled = true;
           rb.title = tr("instance_used");
         }
@@ -1989,11 +2043,20 @@
       "data-key": "mig_vgpu_" + mi.gpu_instance_id });
     if (!cur) sel.appendChild(el("option", null, "-", { value: "" }));
     else if (!known) sel.appendChild(el("option", null, tr("custom_profile", { name: vgpuTail(cur) }), { value: cur, title: cur }));
-    list.forEach(function (p) { sel.appendChild(el("option", null, vgpuTail(p.name), { value: p.name, title: p.name })); });
+    list.forEach(function (p) {
+      var text = p.per_gpu_instance > 1 ? tr("vgpu_seats", { name: vgpuTail(p.name), n: p.per_gpu_instance }) : vgpuTail(p.name);
+      sel.appendChild(el("option", null, text, { value: p.name, title: p.name }));
+    });
     sel.value = cur;
     sel.title = cur;
     sel.addEventListener("change", function () {
-      if (setInstanceVGPU(S.catalog, gp, mi.gpu_instance_id, sel.value)) changed();
+      var r = setInstanceVGPU(S.catalog, gp, mi.gpu_instance_id, sel.value);
+      if (!r.changed) return;
+      changed();
+      if (r.removed.length) {
+        toast(tr("vgpu_removed", { gi: mi.profile + " #" + mi.gpu_instance_id, vgpu: vgpuTail(sel.value),
+          n: r.removed.length, names: r.removed.join(", ") }), "warn");
+      }
     });
     value.appendChild(sel);
     return row;
@@ -2011,9 +2074,7 @@
       field(box, { key: k[0], label: tr(k[1]), type: "number", placeholder: tr("auto"), get: function () { return auto(vm[k[0]]); }, set: function (v) { vm[k[0]] = v; } });
     });
     if (gpuMode(n, gp) === "MIG") {
-      var taken = {};
-      arr(gp.vms).forEach(function (v) { if (v && v !== vm) taken[v.mig_gpu_instance_id] = true; });
-      var opts = arr(gp.mig_instances).filter(function (mi) { return mi && !taken[mi.gpu_instance_id]; })
+      var opts = instanceChoices(gp, vm)
         .map(function (mi) { return { value: String(mi.gpu_instance_id), label: mi.profile + " #" + mi.gpu_instance_id }; });
       if (!opts.some(function (o) { return o.value === String(vm.mig_gpu_instance_id); })) {
         opts.unshift({ value: String(vm.mig_gpu_instance_id), label: "-" });
