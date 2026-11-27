@@ -37,7 +37,8 @@ const CAPTIONS = {
     status: "Status: what to register in the management platform, and lines per sink",
     general: "General: change a setting and save. It applies without a restart",
     sinks_add: "Add sink: the fields follow the type, InfluxDB v1, v2, v3 or OTLP",
-    sinks_rules: "Tag rules: rename, drop or add tag keys per sink before writing",
+    sinks_rules: "Tag rules: add a fixed key=value to every line of a sink",
+    sinks_keys: "Or pick a tag the sink already sends, then rename or drop it",
     topo_drag: "Topology: drag a VM onto a GPU. A GPU with no room refuses it",
     topo_save: "Save: the fake OpenStack API serves the new topology right away"
   },
@@ -45,7 +46,8 @@ const CAPTIONS = {
     status: "상태: 관리 플랫폼에 등록할 값과 sink 별 줄 수",
     general: "일반: 값을 바꿔 저장하면 재시작 없이 반영됩니다",
     sinks_add: "Sink 추가: 종류와 버전(InfluxDB v1, v2, v3, OTLP)에 맞춰 칸이 바뀝니다",
-    sinks_rules: "태그 규칙: sink 마다 태그 키를 바꾸거나 빼거나 더해서 보냅니다",
+    sinks_rules: "Tag 규칙: sink 의 모든 줄에 고정 key=value 를 붙입니다",
+    sinks_keys: "이미 보내는 tag 를 골라 이름을 바꾸거나 뺄 수도 있습니다",
     topo_drag: "토폴로지: VM 을 GPU 에 끌어다 놓습니다. 자리가 없는 GPU 는 거부합니다",
     topo_save: "저장: 가짜 OpenStack API 가 새 토폴로지를 바로 내보냅니다"
   }
@@ -179,7 +181,7 @@ const PAGE_HELPERS = `(() => {
   ring.style.cssText = "position:absolute;left:-14px;top:-14px;width:28px;height:28px;border-radius:50%;" +
     "border:3px solid #ffb020;opacity:0;transition:opacity .2s, transform .2s;transform:scale(.4)";
   const chip = document.createElement("div");
-  chip.style.cssText = "position:absolute;left:18px;top:20px;padding:2px 8px;border-radius:6px;font:600 12px system-ui,sans-serif;" +
+  chip.style.cssText = "position:absolute;left:12px;top:-30px;padding:2px 8px;border-radius:6px;font:600 12px system-ui,sans-serif;" +
     "background:#ffb020;color:#111;white-space:nowrap;display:none;box-shadow:0 2px 6px rgba(0,0,0,.4)";
   cur.append(ring, svg, chip);
   const cap = document.createElement("div");
@@ -303,14 +305,19 @@ const PAGE_HELPERS = `(() => {
       const dt = new DataTransfer();
       s.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: dt }));
       let found = null;
+      let last = null;
       for (const t of document.querySelectorAll('[data-drop="gpu"]')) {
         if (!visible(t) || t.contains(s)) continue;
         const r = t.getBoundingClientRect();
         const ev = new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: dt,
           clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
         t.dispatchEvent(ev);
+        last = t;
         if (ev.defaultPrevented === want) { found = t; break; }
       }
+      // Leave the editor first: a dragend right after a refused dragover reads as a release there, and the page would
+      // keep the refusal hint on screen for a while.
+      if (last) last.dispatchEvent(new DragEvent("dragleave", { bubbles: true, dataTransfer: dt, relatedTarget: document.body }));
       s.dispatchEvent(new DragEvent("dragend", { bubbles: true, dataTransfer: dt }));
       return found;
     },
@@ -539,7 +546,8 @@ async function closeDialog() {
   await waitFor("the dialog to close", "!window.__demo.hasDialog()", 3000);
 }
 
-// Sinks: the Add sink form for each InfluxDB version and OTLP, then the tag rules of site-b.
+// Sinks: the Add sink form for each InfluxDB version and OTLP, then the tag rules of site-b: a fixed tag is added,
+// and a key picked from the chips of the keys the sink sends is dropped.
 async function sceneSinks() {
   await openTab("sinks");
   await waitFor("the sink list", 'document.querySelectorAll("#sinks-table tbody tr").length > 0', 5000);
@@ -571,20 +579,35 @@ async function sceneSinks() {
     await pick("sum", 'document.querySelector("#s-rules > summary")', "the tag rules summary");
     await clickOn("sum");
   }
-  await pick("rule", 'document.querySelector("#s-rules-list .rule-row:last-child")', "a tag rule row");
-  await show("rule");
-  for (const sel of [":first-child", ":nth-child(2)", ":last-child"]) {
-    await pick("rule", `document.querySelector("#s-rules-list .rule-row${sel} .rule-key")`, "a tag rule key");
-    await moveTo(await show("rule"), 320);
-    await hold(250);
-  }
-  await hold(1300);
+  await waitFor("the tag key chips", 'document.querySelectorAll("#s-keys button.tag-key").length > 0', 5000);
+  await pick("addrow", 'document.getElementById("s-add-row")', "the Add tag button");
+  await clickOn("addrow");
+  await typeText("env");
+  await pick("val", 'document.querySelector("#s-add-list .rule-row:last-child .rule-value")', "the new tag value");
+  await clickOn("val");
+  await typeText("demo");
+  await hold(900);
+
+  await caption("sinks_keys");
+  await pick("keys", 'document.getElementById("s-keys")', "the tag key chips");
+  await moveTo(await show("keys"), 320);
+  await hold(500);
+  const chip = 'document.querySelector("#s-keys button[data-key=gpu_type]")';
+  await pick("chip", chip, "the gpu_type chip");
+  await clickOn("chip");
+  await pick("act", 'document.querySelector("#s-rules-list .rule-row:last-child .rule-action")', "the new rule action");
+  await clickOn("act", false);
+  await evaluate('window.__demo.choose("act", "drop")');
+  await hold(500);
+  await pick("chip", chip, "the gpu_type chip");
+  await moveTo(await show("chip"), 380);
+  await hold(1800);
   await closeDialog();
 }
 
 // Topology: a new VM from the palette goes onto a GPU with room, the same VM dragged onto a full GPU is refused, then
-// Save. The refusal is shown at the top of the page: the page draws the refusal note relative to the page box, so it
-// would sit off screen while the page is scrolled.
+// Save. The page scrolls back to the top before the refused drag so the full GPU and the new VM are both in view;
+// the refusal note stays for a moment after the release.
 async function dragItem(item, target, drop, innerFirst) {
   const from = await show(item, innerFirst);
   const to = await show(target);
