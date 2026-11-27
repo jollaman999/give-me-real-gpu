@@ -180,13 +180,26 @@
     return id;
   }
 
-  // fittingProfiles returns the MIG kinds of the GPU's model that still fit, smallest first.
+  // kindCount is how many MIG instances of the kind named name the GPU has.
+  function kindCount(gpu, name) {
+    return arr(gpu && gpu.mig_instances).filter(function (mi) { return mi && mi.profile === name; }).length;
+  }
+
+  // fittingProfiles returns the MIG kinds of the GPU's model that still fit, smallest first: the ones the free
+  // slices take and the GPU has fewer of than the kind's max_per_gpu (no limit when it has none).
   function fittingProfiles(cat, gpu) {
     var m = modelOf(cat, gpu.model_name);
     var left = maxSlices(cat, gpu) - usedSlices(gpu);
     return arr(m && m.mig_profiles)
-      .filter(function (p) { return p.slices <= left; })
+      .filter(function (p) { return p.slices <= left && !(p.max_per_gpu > 0 && kindCount(gpu, p.name) >= p.max_per_gpu); })
       .sort(function (a, b) { return a.slices - b.slices; });
+  }
+
+  // vgpuShort is the last word of a vGPU type name, the part that differs between the types of one model:
+  // NVIDIA RTX Pro 6000 Blackwell DC-24Q -> DC-24Q, GRID T4-4Q -> T4-4Q.
+  function vgpuShort(name) {
+    var parts = String(name || "").trim().split(/\s+/);
+    return parts[parts.length - 1];
   }
 
   function profileCopy(p) {
@@ -270,6 +283,15 @@
     return modes.indexOf(n && n.mode) >= 0 ? n.mode : modes[0] || "";
   }
 
+  // gpuChoices lists what the Add GPU menu of node h offers: every catalog model with all the types it runs in and
+  // the type a plain click gives it.
+  function gpuChoices(topo, cat, h) {
+    var n = arr(topo && topo.hypervisors)[h];
+    return arr(cat && cat.gpu_models).map(function (m) {
+      return { model: m.name, modes: arr(m.modes).slice(), def: newGPUMode(n, m) };
+    });
+  }
+
   // acceptGPU tells whether a GPU of this model may go on node h. The answer carries the type it would get.
   function acceptGPU(topo, cat, h, model) {
     var node = arr(topo.hypervisors)[h];
@@ -280,13 +302,14 @@
     return { ok: true, mode: mode };
   }
 
-  // newGPU builds a GPU of the model for node h with the next free index. It always carries its mode.
-  function newGPU(topo, cat, h, modelName) {
+  // newGPU builds a GPU of the model for node h with the next free index. It always carries its mode: want when the
+  // model runs in it, otherwise the type newGPUMode picks.
+  function newGPU(topo, cat, h, modelName, want) {
     var n = arr(topo.hypervisors)[h];
     var m = modelOf(cat, modelName);
     var index = 0;
     arr(n && n.gpus).forEach(function (g) { if (g && g.index >= index) index = g.index + 1; });
-    var mode = newGPUMode(n, m) || (n && n.mode) || "";
+    var mode = (want && arr(m && m.modes).indexOf(want) >= 0 ? want : newGPUMode(n, m)) || (n && n.mode) || "";
     var g = { index: index, model_name: modelName, mode: mode, vms: [] };
     if (mode === "VGPU") g.profile = profileCopy(arr(m && m.vgpu_profiles)[0]);
     if (mode === "MIG") g.mig_instances = [];
@@ -337,8 +360,11 @@
         }
         var fit = fittingProfiles(cat, gpu);
         if (!fit.length) {
-          if (!modelOf(cat, gpu.model_name)) return { ok: false, reason: "no_mig_profile" };
-          return { ok: false, reason: "no_slices", params: { used: usedSlices(gpu), max: maxSlices(cat, gpu) } };
+          var kinds = arr((modelOf(cat, gpu.model_name) || {}).mig_profiles);
+          if (!kinds.length) return { ok: false, reason: "no_mig_profile" };
+          var sl = { used: usedSlices(gpu), max: maxSlices(cat, gpu) };
+          var limited = kinds.some(function (k) { return k && k.slices <= sl.max - sl.used; });
+          return { ok: false, reason: limited ? "no_kind" : "no_slices", params: sl };
         }
         return { ok: true, create: fit[0] };
     }
@@ -588,6 +614,9 @@
     usedSlices: usedSlices,
     maxSlices: maxSlices,
     fittingProfiles: fittingProfiles,
+    kindCount: kindCount,
+    vgpuShort: vgpuShort,
+    gpuChoices: gpuChoices,
     gpuMode: gpuMode,
     nodeModes: nodeModes,
     newInstance: newInstance,
@@ -652,7 +681,7 @@
       vm_item: "VM",
       trash: "Drop here to delete",
       canvas_empty: "Drag a node here from the palette.",
-      node_empty: "Drag a GPU model here.",
+      node_empty: "Drag a GPU model here or use + Add GPU below.",
       seat_empty: "free",
       mig_free: "{n} free",
       mig_none: "No MIG instances. Drop a VM here or add instances in Properties.",
@@ -664,6 +693,7 @@
       r_slot_used: "This GPU instance is used by {vm}",
       r_gi_full: "All {max} vGPU seats of this GPU instance are taken",
       r_no_slices: "No MIG slices left ({used}/{max})",
+      r_no_kind: "The MIG kinds that fit the free slices are at their limit per GPU ({used}/{max} slices)",
       r_no_mig_profile: "No MIG profiles for this GPU model",
       r_mode_model: "{model} has no GPU type to run in",
       r_unknown: "Cannot drop here",
@@ -683,7 +713,8 @@
       f_gpu_mode_hint: "Changing it keeps the VMs and fits them to the new type. VMs that do not fit are deleted.",
       mode_removed: "Changed GPU {gpu} to {mode} and deleted {n} VM(s): {names}",
       vgpu_removed: "Changed GPU instance {gi} to {vgpu} and deleted {n} VM(s): {names}",
-      vgpu_seats: "{name} ({n} VMs)",
+      vgpu_option: "{name} · {gb} GB · {n} VMs",
+      vgpu_option_one: "{name} · {gb} GB · 1 VM",
       f_id: "ID",
       f_uuid: "UUID",
       f_host_ip: "Host IP",
@@ -712,6 +743,10 @@
       col_vgpu: "vGPU",
       col_vm: "VM",
       add_gpu: "Add GPU",
+      add_gpu_btn: "+ Add GPU",
+      add_gpu_node: "Add GPU to this node",
+      gpu_add_tip: "{model}: adds as {mode}",
+      gpu_add_as: "Add {model} as {mode}",
       add_vm: "Add VM",
       add_instance: "Add instance",
       remove: "Remove",
@@ -777,7 +812,7 @@
       vm_item: "VM",
       trash: "여기에 놓으면 삭제",
       canvas_empty: "팔레트에서 노드를 끌어다 놓으세요.",
-      node_empty: "GPU 모델을 끌어다 놓으세요.",
+      node_empty: "GPU 모델을 끌어다 놓거나 아래 + GPU 추가를 누르세요.",
       seat_empty: "빈 자리",
       mig_free: "{n} 남음",
       mig_none: "MIG 인스턴스가 없습니다. VM 을 놓거나 속성에서 인스턴스를 추가하세요.",
@@ -789,6 +824,7 @@
       r_slot_used: "이 GPU 인스턴스는 {vm} 이(가) 쓰고 있습니다",
       r_gi_full: "이 GPU 인스턴스의 vGPU 자리 {max}개가 다 찼습니다",
       r_no_slices: "남은 MIG slice 가 없습니다 ({used}/{max})",
+      r_no_kind: "남은 slice 에 들어가는 MIG 종류는 GPU 하나에 만들 수 있는 수가 다 찼습니다 ({used}/{max} slice)",
       r_no_mig_profile: "이 GPU 모델의 MIG 프로필이 없습니다",
       r_mode_model: "{model} 은(는) 쓸 수 있는 GPU 유형이 없습니다",
       r_unknown: "여기에는 놓을 수 없습니다",
@@ -808,7 +844,8 @@
       f_gpu_mode_hint: "바꾸면 VM 은 남기고 새 유형에 맞게 고칩니다. 자리가 모자라면 넘치는 VM 은 지웁니다.",
       mode_removed: "GPU {gpu} 유형을 {mode}(으)로 바꾸면서 VM {n}개를 지웠습니다: {names}",
       vgpu_removed: "GPU 인스턴스 {gi} 의 vGPU 를 {vgpu}(으)로 바꾸면서 VM {n}개를 지웠습니다: {names}",
-      vgpu_seats: "{name} (VM {n}대)",
+      vgpu_option: "{name} · {gb}GB · VM {n}대",
+      vgpu_option_one: "{name} · {gb}GB · VM 1대",
       f_id: "ID",
       f_uuid: "UUID",
       f_host_ip: "호스트 IP",
@@ -837,6 +874,10 @@
       col_vgpu: "vGPU",
       col_vm: "VM",
       add_gpu: "GPU 추가",
+      add_gpu_btn: "+ GPU 추가",
+      add_gpu_node: "이 노드에 GPU 추가",
+      gpu_add_tip: "{model}: {mode}(으)로 추가",
+      gpu_add_as: "{model} 을(를) {mode}(으)로 추가",
       add_vm: "VM 추가",
       add_instance: "인스턴스 추가",
       remove: "제거",
@@ -938,6 +979,10 @@
   function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
   function modeLabel(mode) { return DICT.en["mode_" + mode] ? tr("mode_" + mode) : String(mode || "?"); }
   function shortModel(name) { return String(name || "?").replace(/^(NVIDIA|Tesla|GRID) /, ""); }
+  // vgpuOption names a vGPU type in a list: short name, framebuffer and how many VMs it seats.
+  function vgpuOption(name, mb, n) {
+    return tr(n === 1 ? "vgpu_option_one" : "vgpu_option", { name: vgpuShort(name), gb: Math.round((mb || 0) / 102.4) / 10, n: n });
+  }
 
   function nodes() { return arr(S.topo && S.topo.hypervisors); }
   function node(h) { return nodes()[h] || null; }
@@ -1109,9 +1154,9 @@
     S.sel = { kind: "node", h: S.topo.hypervisors.length - 1 };
   }
 
-  function addGPU(h, modelName) {
+  function addGPU(h, modelName, mode) {
     var n = node(h);
-    var g = newGPU(S.topo, S.catalog, h, modelName);
+    var g = newGPU(S.topo, S.catalog, h, modelName, mode);
     if (!n.gpus) n.gpus = [];
     n.gpus.push(g);
     S.sel = { kind: "gpu", h: h, g: n.gpus.length - 1 };
@@ -1597,11 +1642,12 @@
     var head = el("div", "tp-gpu-head", null, { draggable: "true", "data-drag": "gpu", "data-h": h, "data-g": g });
     head.appendChild(el("span", "tp-gpu-idx", "GPU " + gp.index));
     if (tagged) head.appendChild(el("span", "tp-tag tp-mode-" + mode, modeLabel(mode)));
-    head.appendChild(el("span", "tp-gpu-model", shortModel(gp.model_name)));
+    head.appendChild(el("span", "tp-gpu-model", shortModel(gp.model_name), { title: gp.model_name }));
     var vms = arr(gp.vms);
     if (mode === "VGPU") {
       var max = gp.profile ? gp.profile.max_instances : 0;
-      head.appendChild(el("span", "tp-gpu-meta", (gp.profile ? shortModel(gp.profile.name) : "-") + " " + vms.length + "/" + max));
+      head.appendChild(el("span", "tp-gpu-meta", (gp.profile ? vgpuShort(gp.profile.name) : "-") + " " + vms.length + "/" + max,
+        { title: gp.profile ? gp.profile.name : null }));
     } else if (mode === "MIG") {
       head.appendChild(el("span", "tp-gpu-meta", usedSlices(gp) + "/" + slices));
     }
@@ -1688,9 +1734,26 @@
         mapped.nodes[h].forEach(function (m) { ul.appendChild(el("li", null, m)); });
         card.appendChild(ul);
       }
+      card.appendChild(addGPUButton(h, n));
       canvas.appendChild(card);
     });
     main.appendChild(canvas);
+  }
+
+  // addGPUButton is the line at the foot of a node card that opens the Add GPU menu below itself.
+  function addGPUButton(h, n) {
+    var b = el("button", "tp-node-add", tr("add_gpu_btn"), { type: "button", "aria-haspopup": "menu", "data-h": h });
+    b.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var r = b.getBoundingClientRect();
+      var list = [{ label: n.hostname || "?", title: true }, { label: tr("add_gpu") }].concat(gpuAddItems(h));
+      openMenu({ kind: "node", h: h }, r.left, r.bottom, e.detail === 0, {
+        list: list, above: r.top,
+        refocus: function () { return S.els.main.querySelector('.tp-node-add[data-h="' + h + '"]'); }
+      });
+    });
+    return b;
   }
 
   function renderJSON(main) {
@@ -1813,7 +1876,7 @@
     f.appendChild(el("label", null, label, { for: id }));
     var s = el("select", null, null, { id: id, "data-key": key });
     options.forEach(function (o) {
-      var op = el("option", null, o.label, { value: o.value });
+      var op = el("option", null, o.label, { value: o.value, title: o.title });
       if (o.value === current) op.selected = true;
       s.appendChild(op);
     });
@@ -1889,16 +1952,28 @@
     });
     entityField(box, n.hostname, n);
 
-    var models = arr(S.catalog && S.catalog.gpu_models);
-    if (models.length) {
+    var choices = gpuChoices(S.topo, S.catalog, h);
+    if (choices.length) {
       var row = el("div", "tp-actions");
-      var sel = el("select", null, null, { "aria-label": tr("f_model") });
-      models.forEach(function (m) { sel.appendChild(el("option", null, shortModel(m.name), { value: m.name })); });
-      row.appendChild(sel);
-      row.appendChild(btn(tr("add_gpu"), "btn-small", function () {
-        addGPU(h, sel.value);
+      var sel = el("select", null, null, { "aria-label": tr("f_model"), "data-key": "add_model" });
+      choices.forEach(function (c) { sel.appendChild(el("option", null, shortModel(c.model), { value: c.model, title: c.model })); });
+      var modeSel = el("select", null, null, { "aria-label": tr("f_gpu_mode"), "data-key": "add_mode" });
+      var addBtn = btn(tr("add_gpu"), "btn-small", function () {
+        addGPU(h, sel.value, modeSel.value);
         changed();
-      }));
+      });
+      var fillModes = function () {
+        var c = choices[sel.selectedIndex];
+        clear(modeSel);
+        c.modes.forEach(function (x) { modeSel.appendChild(el("option", null, modeLabel(x), { value: x })); });
+        modeSel.value = c.def;
+        modeSel.disabled = addBtn.disabled = !c.def;
+      };
+      sel.addEventListener("change", fillModes);
+      fillModes();
+      row.appendChild(sel);
+      row.appendChild(modeSel);
+      row.appendChild(addBtn);
       box.appendChild(row);
     }
     var del = el("div", "tp-actions");
@@ -1924,8 +1999,8 @@
     if (mode === "VGPU") {
       var profs = arr(m && m.vgpu_profiles);
       var cur = gp.profile ? gp.profile.name : "";
-      var opts = profs.map(function (p) { return { value: p.name, label: shortModel(p.name) + " (" + p.framebuffer_mb + " MB, " + p.max_instances + ")" }; });
-      if (cur && !profs.some(function (p) { return p.name === cur; })) opts.unshift({ value: cur, label: tr("custom_profile", { name: cur }) });
+      var opts = profs.map(function (p) { return { value: p.name, label: vgpuOption(p.name, p.framebuffer_mb, p.max_instances), title: p.name }; });
+      if (cur && !profs.some(function (p) { return p.name === cur; })) opts.unshift({ value: cur, label: tr("custom_profile", { name: vgpuShort(cur) }), title: cur });
       if (!cur) opts.unshift({ value: "", label: "-" });
       selectField(box, "vgpu_profile", tr("f_vgpu_profile"), opts, cur, function (val) {
         var p = profs.filter(function (x) { return x.name === val; })[0];
@@ -2013,13 +2088,6 @@
     box.appendChild(actions);
   }
 
-  // vgpuTail is the last word of a vGPU type name, the part that differs between the types of one model:
-  // NVIDIA RTX Pro 6000 Blackwell DC-2-48Q -> DC-2-48Q.
-  function vgpuTail(name) {
-    var parts = String(name || "").trim().split(/\s+/);
-    return parts[parts.length - 1] || "-";
-  }
-
   // instanceVGPURow shows the vGPU type of a MIG instance on a line of its own below the instance, as a choice when
   // its kind offers more than one.
   function instanceVGPURow(gp, mi) {
@@ -2035,17 +2103,16 @@
     var list = migVGPUs(migKind(S.catalog, gp, mi));
     var known = list.some(function (p) { return p && p.name === cur; });
     if (list.length < 2) {
-      value.textContent = cur ? (known || !list.length ? vgpuTail(cur) : tr("custom_profile", { name: vgpuTail(cur) })) : "-";
+      value.textContent = cur ? (known || !list.length ? vgpuShort(cur) : tr("custom_profile", { name: vgpuShort(cur) })) : "-";
       value.title = cur;
       return row;
     }
     var sel = el("select", null, null, { "aria-label": tr("col_vgpu") + " " + mi.profile + " #" + mi.gpu_instance_id,
       "data-key": "mig_vgpu_" + mi.gpu_instance_id });
     if (!cur) sel.appendChild(el("option", null, "-", { value: "" }));
-    else if (!known) sel.appendChild(el("option", null, tr("custom_profile", { name: vgpuTail(cur) }), { value: cur, title: cur }));
+    else if (!known) sel.appendChild(el("option", null, tr("custom_profile", { name: vgpuShort(cur) }), { value: cur, title: cur }));
     list.forEach(function (p) {
-      var text = p.per_gpu_instance > 1 ? tr("vgpu_seats", { name: vgpuTail(p.name), n: p.per_gpu_instance }) : vgpuTail(p.name);
-      sel.appendChild(el("option", null, text, { value: p.name, title: p.name }));
+      sel.appendChild(el("option", null, vgpuOption(p.name, p.framebuffer_mb, p.per_gpu_instance || 1), { value: p.name, title: p.name }));
     });
     sel.value = cur;
     sel.title = cur;
@@ -2054,7 +2121,7 @@
       if (!r.changed) return;
       changed();
       if (r.removed.length) {
-        toast(tr("vgpu_removed", { gi: mi.profile + " #" + mi.gpu_instance_id, vgpu: vgpuTail(sel.value),
+        toast(tr("vgpu_removed", { gi: mi.profile + " #" + mi.gpu_instance_id, vgpu: vgpuShort(sel.value),
           n: r.removed.length, names: r.removed.join(", ") }), "warn");
       }
     });
@@ -2093,7 +2160,8 @@
 
   // ---- context menu and Delete key ----
 
-  // menu is the open context menu: { el, items (the buttons), byKey (opened from the keyboard) }.
+  // menu is the open context menu: { el, rows (the buttons, a row per line: an action alone, or a GPU model and its
+  // type chips), byKey (opened from the keyboard), refocus (finds what gets the focus back, the selection when unset) }.
   var menu = null;
   // kbMenuAt is when the keyboard last opened the menu. The ContextMenu key also sends a contextmenu event.
   var kbMenuAt = 0;
@@ -2131,23 +2199,35 @@
     if (n) n.focus({ preventScroll: true });
   }
 
+  // gpuAddItems lists the GPU models node h takes, each with a chip per type it runs in. A click on the model adds
+  // it in the type whose chip is marked default, a chip adds it in that type.
+  function gpuAddItems(h) {
+    return gpuChoices(S.topo, S.catalog, h).map(function (c) {
+      var v = acceptGPU(S.topo, S.catalog, h, c.model);
+      var name = shortModel(c.model);
+      if (!v.ok) return { text: name, indent: true, tip: c.model, note: tr("r_" + v.reason, v.params), disabled: true, run: function () {} };
+      return {
+        text: name, indent: true, tip: tr("gpu_add_tip", { model: c.model, mode: modeLabel(c.def) }),
+        run: function () { addGPU(h, c.model, c.def); changed(); },
+        chips: c.modes.map(function (mode) {
+          return {
+            mode: mode, def: mode === c.def, text: modeLabel(mode), tip: tr("gpu_add_as", { model: name, mode: modeLabel(mode) }),
+            run: function () { addGPU(h, c.model, mode); changed(); }
+          };
+        })
+      };
+    });
+  }
+
   // menuItems lists the entries of the menu for s. An entry is a label (text only), a separator (sep) or an action
-  // (run) that may be disabled with a reason in note.
+  // (run) that may be disabled with a reason in note. An action with chips draws them after it on its line.
   function menuItems(s) {
     var items = [];
     var n = node(s.h);
     if (s.kind === "node") {
       items.push({ label: n.hostname || "?", title: true });
       items.push({ label: tr("add_gpu") });
-      arr(S.catalog && S.catalog.gpu_models).forEach(function (m) {
-        var v = acceptGPU(S.topo, S.catalog, s.h, m.name);
-        items.push({
-          text: shortModel(m.name), indent: true, tip: m.name,
-          note: v.ok ? (v.mode !== n.mode ? modeLabel(v.mode) : "") : tr("r_" + v.reason, v.params),
-          disabled: !v.ok,
-          run: function () { addGPU(s.h, m.name); changed(); }
-        });
-      });
+      items = items.concat(gpuAddItems(s.h));
       items.push({ sep: true });
       items.push({ text: tr("delete_node"), danger: true, run: function () { remove({ kind: "node", h: s.h }); changed(); } });
       return items;
@@ -2174,6 +2254,9 @@
         });
       });
       items.push({ sep: true });
+      items.push({ label: tr("add_gpu_node") });
+      items = items.concat(gpuAddItems(s.h));
+      items.push({ sep: true });
       items.push({ text: tr("delete_gpu"), danger: true, run: function () { remove({ kind: "gpu", h: s.h, g: s.g }); changed(); } });
       return items;
     }
@@ -2184,15 +2267,16 @@
   }
 
   // placeMenu opens the menu at the pointer and keeps it in the viewport: left of the pointer past the right edge,
-  // above it past the bottom edge.
-  function placeMenu(box, x, y) {
+  // above it past the bottom edge. above is where the menu ends when it goes up, the top of the button it opened
+  // from; the pointer when unset.
+  function placeMenu(box, x, y, above) {
     box.style.left = "0px";
     box.style.top = "0px";
     var w = box.offsetWidth, h = box.offsetHeight;
     var vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
     var left = x, top = y;
     if (left + w > vw - MENU_GAP) left = x - w;
-    if (top + h > vh - MENU_GAP) top = y - h;
+    if (top + h > vh - MENU_GAP) top = (above === undefined ? y : above) - h;
     left = Math.max(MENU_GAP, Math.min(left, vw - MENU_GAP - w));
     top = Math.max(MENU_GAP, Math.min(top, vh - MENU_GAP - h));
     box.style.left = left + "px";
@@ -2201,9 +2285,11 @@
 
   function closeMenu(refocus) {
     if (!menu) return;
+    var back = refocus && menu.refocus ? menu.refocus() : null;
     menu.el.remove();
     menu = null;
-    if (refocus) focusSel();
+    if (back) back.focus({ preventScroll: true });
+    else if (refocus) focusSel();
   }
 
   function runMenu(it) {
@@ -2213,15 +2299,26 @@
     if (byKey) focusSel();
   }
 
+  // menuKey moves the focus a line down or up with the arrows, to its first button, and along a line's chips with
+  // left and right.
   function menuKey(e) {
-    var items = menu ? menu.items : [];
-    if (!items.length) return;
-    var i = items.indexOf(document.activeElement);
+    var rows = menu ? menu.rows : [];
+    if (!rows.length) return;
+    var r = -1, c = 0;
+    rows.forEach(function (row, i) {
+      var j = row.indexOf(document.activeElement);
+      if (j >= 0) { r = i; c = j; }
+    });
     switch (e.key) {
-      case "ArrowDown": i = (i + 1) % items.length; break;
-      case "ArrowUp": i = i <= 0 ? items.length - 1 : i - 1; break;
-      case "Home": i = 0; break;
-      case "End": i = items.length - 1; break;
+      case "ArrowDown": r = (r + 1) % rows.length; c = 0; break;
+      case "ArrowUp": r = r <= 0 ? rows.length - 1 : r - 1; c = 0; break;
+      case "ArrowRight":
+      case "ArrowLeft":
+        if (r < 0) return;
+        c = Math.max(0, Math.min(rows[r].length - 1, c + (e.key === "ArrowRight" ? 1 : -1)));
+        break;
+      case "Home": r = 0; c = 0; break;
+      case "End": r = rows.length - 1; c = 0; break;
       case "Escape":
       case "Tab":
         e.preventDefault();
@@ -2232,24 +2329,41 @@
       case " ":
         e.preventDefault();
         e.stopPropagation();
-        if (items[i]) items[i].click();
+        if (r >= 0) rows[r][c].click();
         return;
       default:
         return;
     }
     e.preventDefault();
     e.stopPropagation();
-    items[i].focus({ preventScroll: true });
+    rows[r][c].focus({ preventScroll: true });
   }
 
-  function openMenu(s, x, y, byKey) {
+  function menuButton(it, cls) {
+    var b = el("button", cls, null, { type: "button", tabindex: "-1", role: it.radio ? "menuitemradio" : "menuitem", title: it.tip || null });
+    if (it.disabled) b.setAttribute("aria-disabled", "true");
+    b.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!it.disabled) runMenu(it);
+    });
+    b.addEventListener("pointermove", function () {
+      if (document.activeElement !== b) b.focus({ preventScroll: true });
+    });
+    return b;
+  }
+
+  // openMenu opens the menu for s at (x, y). opt.list replaces the entries of menuItems, opt.above and opt.refocus
+  // are as in placeMenu and menu.
+  function openMenu(s, x, y, byKey, opt) {
+    opt = opt || {};
     closeMenu(false);
     if (!selValid(s)) return;
     select(s);
-    var list = menuItems(s);
+    var list = opt.list || menuItems(s);
     var title = list.filter(function (it) { return it.title; })[0];
     var box = el("div", "tp-menu", null, { role: "menu", "aria-label": title ? title.label : "" });
-    var buttons = [];
+    var rows = [];
     list.forEach(function (it) {
       if (it.sep) {
         box.appendChild(el("div", "tp-menu-sep", null, { role: "separator" }));
@@ -2259,34 +2373,38 @@
         box.appendChild(el("div", "tp-menu-label" + (it.title ? " tp-menu-title" : ""), it.label, { role: "presentation" }));
         return;
       }
-      var b = el("button", "tp-menu-item" + (it.indent ? " tp-menu-indent" : "") + (it.danger ? " tp-menu-danger" : ""), null, {
-        type: "button", tabindex: "-1", role: it.radio ? "menuitemradio" : "menuitem", title: it.tip || null
-      });
+      var b = menuButton(it, "tp-menu-item" + (it.indent ? " tp-menu-indent" : "") + (it.danger ? " tp-menu-danger" : ""));
       if (it.radio) {
         b.setAttribute("aria-checked", String(!!it.checked));
         b.appendChild(el("span", "tp-menu-dot tp-mode-" + it.mode, null, { "aria-hidden": "true" }));
       }
-      if (it.disabled) b.setAttribute("aria-disabled", "true");
       b.appendChild(el("span", "tp-menu-text", it.text));
       if (it.note) b.appendChild(el("small", "tp-menu-note", it.note));
-      b.addEventListener("click", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (!it.disabled) runMenu(it);
-      });
-      b.addEventListener("pointermove", function () {
-        if (document.activeElement !== b) b.focus({ preventScroll: true });
-      });
-      buttons.push(b);
-      box.appendChild(b);
+      var row = [b];
+      if (arr(it.chips).length) {
+        var line = el("div", "tp-menu-row", null, { role: "group", "aria-label": it.text });
+        line.appendChild(b);
+        it.chips.forEach(function (c) {
+          var cb = menuButton(c, "tp-menu-chip tp-mode-" + c.mode + (c.def ? " tp-chip-def" : ""));
+          cb.setAttribute("aria-label", c.tip);
+          cb.textContent = c.text;
+          line.appendChild(cb);
+          row.push(cb);
+        });
+        box.appendChild(line);
+      } else {
+        box.appendChild(b);
+      }
+      rows.push(row);
     });
     box.addEventListener("keydown", menuKey);
     box.addEventListener("contextmenu", function (e) { e.preventDefault(); });
     // Outside the glass panel, as the drag hint: its backdrop-filter would make it the containing block.
     document.body.appendChild(box);
-    menu = { el: box, items: buttons, byKey: byKey };
-    placeMenu(box, x, y);
-    var first = buttons.filter(function (b) { return b.getAttribute("aria-disabled") !== "true"; })[0] || buttons[0];
+    menu = { el: box, rows: rows, byKey: byKey, refocus: opt.refocus };
+    placeMenu(box, x, y, opt.above);
+    var first = rows.map(function (r) { return r[0]; }).filter(function (b) { return b.getAttribute("aria-disabled") !== "true"; })[0] ||
+      (rows[0] && rows[0][0]);
     if (first) first.focus({ preventScroll: true });
   }
 
@@ -2323,7 +2441,7 @@
       e.preventDefault();
       kbMenuAt = Date.now();
       var r = t.getBoundingClientRect();
-      openMenu(s, r.left, r.bottom, true);
+      openMenu(s, r.left, r.bottom, true, { above: r.top });
     });
     document.addEventListener("pointerdown", function (e) {
       if (menu && !menu.el.contains(e.target)) closeMenu(false);

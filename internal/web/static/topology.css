@@ -99,11 +99,13 @@
 .tp-pal-item.tp-mode-MIG { border-left-color: var(--tp-mig); }
 .tp-pal-item.tp-mode-PASSTHROUGH { border-left-color: var(--tp-pt); }
 .tp-pal-gpu { display: flex; flex-direction: column; gap: 0.2rem; border-left-color: var(--accent); }
-.tp-pal-name { font-weight: 600; }
+.tp-pal-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tp-pal-meta { display: flex; flex-wrap: wrap; gap: 0.25rem; align-items: center; color: var(--text-dim); font-size: 11px; }
 .tp-pal-vm { border-left-color: var(--ok); }
 .tp-tag {
   display: inline-block;
+  flex: none;
+  white-space: nowrap;
   font-size: 10px;
   font-weight: 600;
   line-height: 1.4;
@@ -165,7 +167,7 @@
   min-width: 0;
 }
 .tp-node-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tp-node-meta, .tp-gpu-meta { margin-left: auto; color: var(--text-dim); font-size: 12px; font-family: var(--mono); white-space: nowrap; }
+.tp-node-meta, .tp-gpu-meta { flex: none; margin-left: auto; color: var(--text-dim); font-size: 12px; font-family: var(--mono); white-space: nowrap; }
 .tp-gpus { display: flex; flex-direction: column; gap: 0.4rem; }
 .tp-gpu {
   border: 1px solid var(--border-soft);
@@ -173,8 +175,8 @@
   padding: 0.35rem 0.5rem;
   background: var(--bg-sunken);
 }
-.tp-gpu-idx { font-weight: 600; font-size: 12px; }
-.tp-gpu-model { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-gpu-idx { flex: none; font-weight: 600; font-size: 12px; white-space: nowrap; }
+.tp-gpu-model { min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tp-gpu-body { margin-top: 0.3rem; display: flex; flex-direction: column; gap: 0.3rem; }
 .tp-seats { display: flex; flex-wrap: wrap; gap: 0.25rem; }
 .tp-seat {
@@ -222,6 +224,19 @@
 .tp-slot-vms { display: flex; flex-wrap: wrap; gap: 0.15rem; min-width: 0; }
 .tp-slot-vms > * { flex: 1 1 auto; min-width: 0; box-sizing: border-box; }
 .tp-slot .tp-seat { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-node-add {
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  padding: 0.3rem 0.5rem;
+  cursor: pointer;
+  text-align: center;
+}
+.tp-node-add:hover, .tp-node-add:focus-visible { color: var(--accent); border-color: var(--accent); background: var(--bg-hover); }
+.tp-node-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .tp-free {
   border-style: dashed;
   border-color: var(--border-strong);
@@ -350,6 +365,33 @@
 .tp-menu-item[aria-checked="true"] .tp-menu-dot.tp-mode-VGPU { background: var(--tp-vgpu); }
 .tp-menu-item[aria-checked="true"] .tp-menu-dot.tp-mode-MIG { background: var(--tp-mig); }
 .tp-menu-item[aria-checked="true"] .tp-menu-dot.tp-mode-PASSTHROUGH { background: var(--tp-pt); }
+/* Add GPU menu: a model and a chip per type on one line */
+.tp-menu-row { display: flex; align-items: center; gap: 0.25rem; min-width: 0; padding-right: 0.3rem; }
+.tp-menu-row .tp-menu-item { flex: 1 1 auto; width: auto; min-width: 0; }
+.tp-menu-row .tp-menu-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-menu-chip {
+  flex: none;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  padding: 0.05rem 0.45rem;
+  border: 1.5px solid var(--text-dim);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tp-menu-chip.tp-mode-VGPU { border-color: var(--tp-vgpu); }
+.tp-menu-chip.tp-mode-MIG { border-color: var(--tp-mig); }
+.tp-menu-chip.tp-mode-PASSTHROUGH { border-color: var(--tp-pt); }
+.tp-menu-chip.tp-chip-def { color: var(--tp-tag-text); }
+.tp-menu-chip.tp-chip-def.tp-mode-VGPU { background: var(--tp-vgpu); }
+.tp-menu-chip.tp-chip-def.tp-mode-MIG { background: var(--tp-mig); }
+.tp-menu-chip.tp-chip-def.tp-mode-PASSTHROUGH { background: var(--tp-pt); }
+.tp-menu-chip:hover { box-shadow: 0 0 0 2px var(--bg-hover); }
+.tp-menu-chip:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* properties */
 .tp-field { margin-bottom: 0.55rem; }

@@ -486,3 +486,109 @@ func TestTopologyJSSharedInstances(t *testing.T) {
 		}
 	}
 }
+
+// jsAddScript checks the short vGPU names, the Add GPU menu choices with every type of each model, a new GPU in a
+// picked type, and the MIG kinds a GPU leaves out once it has max_per_gpu of them.
+const jsAddScript = `
+const h = require(process.argv[2]);
+const cat = JSON.parse(process.argv[3]);
+const topo = JSON.parse(process.argv[4]);
+const out = {};
+out.short = ["NVIDIA RTX Pro 6000 Blackwell DC-24Q", "NVIDIA RTX Pro 6000 Blackwell DC-24C", "GRID T4-4Q", "  NVIDIA  A10-24Q ", "x", ""].map(h.vgpuShort);
+out.choices = [0, 2, 4].map(hi => h.gpuChoices(topo, cat, hi));
+const a10 = "NVIDIA A10", a100 = "NVIDIA A100-SXM4-80GB";
+const ng = (hi, model, mode) => h.newGPU(topo, cat, hi, model, mode).mode;
+out.newGPUMode = [ng(0, a100, "MIG"), ng(0, a100, "PASSTHROUGH"), ng(0, a10, "MIG"), ng(2, a100), ng(4, a10, "nope")];
+
+const vp = (name) => ({name: name, type: "nvidia-1", framebuffer_mb: 1024, max_instances: 1});
+const lim = {name: "Test 7-slice GPU", memory_mib: 1, modes: ["MIG"], max_mig_slices: 7, vgpu_profiles: [], mig_profiles: [
+  {name: "1g.a", slices: 1, gpu_instance_ids: [7, 8, 9, 10, 11, 12, 13], vgpu_profile: vp("a")},
+  {name: "1g.b", slices: 1, max_per_gpu: 4, gpu_instance_ids: [7, 8, 9, 10], vgpu_profile: vp("b")},
+  {name: "2g", slices: 2, max_per_gpu: 1, gpu_instance_ids: [3, 4, 5], vgpu_profile: vp("c")}]};
+const only = {name: "Test limited GPU", memory_mib: 1, modes: ["VGPU", "MIG"], max_mig_slices: 7, vgpu_profiles: [], mig_profiles: [
+  {name: "1g.b", slices: 1, max_per_gpu: 4, gpu_instance_ids: [7, 8, 9, 10], vgpu_profile: vp("b")}]};
+cat.gpu_models.push(lim, only);
+const g = {model_name: lim.name, mig_instances: []};
+const fit = () => h.fittingProfiles(cat, g).map(p => p.name);
+out.limit = [fit()];
+g.mig_instances.push(h.newInstance(g, lim.mig_profiles[2]));
+out.limit.push(fit());
+for (let i = 0; i < 4; i++) g.mig_instances.push(h.newInstance(g, lim.mig_profiles[1]));
+out.limit.push(fit(), h.kindCount(g, "1g.b"), h.usedSlices(g));
+
+// A drop on the free part makes instances of the only kind until it is at its limit, with slices still free.
+const og = {index: 0, model_name: only.name, mode: "MIG", mig_instances: [], vms: []};
+const t = {flavors: [], hypervisors: [{hostname: "n", mode: "MIG", gpus: [og]}]};
+out.accept = [];
+for (let i = 0; i < 5; i++) {
+  const r = h.acceptVM(t, cat, {h: 0, g: 0, free: true}, {kind: "new-vm"});
+  out.accept.push(r.ok ? "create:" + r.create.name : r.reason + " " + r.params.used + "/" + r.params.max);
+  if (r.ok) og.mig_instances.push(h.newInstance(og, r.create));
+}
+// To MIG with five VMs: four get an instance of the limited kind, the fifth is deleted.
+const vms = Array.from({length: 5}, (_, i) => ({name: "vm" + (i + 1), mode: "VGPU", mig_gpu_instance_id: -1}));
+const t5 = {flavors: [], hypervisors: [{hostname: "n5", mode: "VGPU", gpus: [{index: 0, model_name: only.name, profile: vp("q"), vms: vms}]}]};
+t5.hypervisors[0].gpus[0].profile.max_instances = 8;
+out.convert = h.convertGPU(t5, cat, 0, 0, "MIG").removed;
+console.log(JSON.stringify(out));
+`
+
+func TestTopologyJSAddGPUAndLimits(t *testing.T) {
+	got := runTopologyJS(t, jsAddScript)
+	def := topology.Default()
+	cat := topology.DefaultCatalog()
+	var choices []any
+	for _, hi := range []int{0, 2, 4} {
+		nodeMode := def.Hypervisors[hi].Mode
+		var list []any
+		for _, m := range cat.GPUModels {
+			var modes []any
+			pick := ""
+			for _, x := range m.Modes {
+				modes = append(modes, string(x))
+				if x == nodeMode {
+					pick = string(x)
+				}
+			}
+			if pick == "" && len(m.Modes) > 0 {
+				pick = string(m.Modes[0])
+			}
+			list = append(list, map[string]any{"model": m.Name, "modes": modes, "def": pick})
+		}
+		choices = append(choices, list)
+	}
+	want := map[string]any{
+		"short":      []any{"DC-24Q", "DC-24C", "T4-4Q", "A10-24Q", "x", ""},
+		"choices":    choices,
+		"newGPUMode": []any{"MIG", "PASSTHROUGH", "VGPU", "MIG", "PASSTHROUGH"},
+		"limit": []any{
+			[]any{"1g.a", "1g.b", "2g"},
+			[]any{"1g.a", "1g.b"},
+			[]any{"1g.a"}, 4.0, 6.0,
+		},
+		"accept":  []any{"create:1g.b", "create:1g.b", "create:1g.b", "create:1g.b", "no_kind 4/7"},
+		"convert": []any{"vm5"},
+	}
+	for k, w := range want {
+		if !reflect.DeepEqual(got[k], w) {
+			t.Errorf("%s = %#v, want %#v", k, got[k], w)
+		}
+	}
+	// The RTX PRO 6000 Blackwell offers all three types on every node, its default chip following the node.
+	for i, nodeMode := range []string{"VGPU", "MIG", "PASSTHROUGH"} {
+		found := false
+		for _, c := range got["choices"].([]any)[i].([]any) {
+			c := c.(map[string]any)
+			if c["model"] != "NVIDIA RTX PRO 6000 Blackwell Server Edition" {
+				continue
+			}
+			found = true
+			if !reflect.DeepEqual(c["modes"], []any{"VGPU", "MIG", "PASSTHROUGH"}) || c["def"] != nodeMode {
+				t.Errorf("RTX PRO 6000 on a %s node: %v", nodeMode, c)
+			}
+		}
+		if !found {
+			t.Errorf("RTX PRO 6000 missing from the Add GPU choices of the %s node", nodeMode)
+		}
+	}
+}
